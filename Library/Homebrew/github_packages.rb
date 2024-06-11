@@ -3,23 +3,31 @@
 
 require "utils/curl"
 require "json"
+require "zlib"
+require "extend/hash/keys"
+require "system_command"
 
 # GitHub Packages client.
-#
-# @api private
 class GitHubPackages
-  extend T::Sig
-
   include Context
+  include SystemCommand::Mixin
 
   URL_DOMAIN = "ghcr.io"
-  URL_PREFIX = "https://#{URL_DOMAIN}/v2/"
-  DOCKER_PREFIX = "docker://#{URL_DOMAIN}/"
+  URL_PREFIX = "https://#{URL_DOMAIN}/v2/".freeze
+  DOCKER_PREFIX = "docker://#{URL_DOMAIN}/".freeze
   public_constant :URL_DOMAIN
   private_constant :URL_PREFIX
   private_constant :DOCKER_PREFIX
 
-  URL_REGEX = %r{(?:#{Regexp.escape(URL_PREFIX)}|#{Regexp.escape(DOCKER_PREFIX)})([\w-]+)/([\w-]+)}.freeze
+  URL_REGEX = %r{(?:#{Regexp.escape(URL_PREFIX)}|#{Regexp.escape(DOCKER_PREFIX)})([\w-]+)/([\w-]+)}
+
+  # Valid OCI tag characters
+  # https://github.com/opencontainers/distribution-spec/blob/main/spec.md#workflow-categories
+  VALID_OCI_TAG_REGEX = /^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$/
+  INVALID_OCI_TAG_CHARS_REGEX = /[^a-zA-Z0-9._-]/
+
+  GZIP_BUFFER_SIZE = 64 * 1024
+  private_constant :GZIP_BUFFER_SIZE
 
   # Translate Homebrew tab.arch to OCI platform.architecture
   TAB_ARCH_TO_PLATFORM_ARCHITECTURE = {
@@ -32,20 +40,6 @@ class GitHubPackages
     "Linux"     => "linux",
     "Macintosh" => "darwin",
   }.freeze
-
-  sig { returns(String) }
-  def inspect
-    "#<GitHubPackages: org=#{@github_org}>"
-  end
-
-  sig { params(org: T.nilable(String)).void }
-  def initialize(org: "homebrew")
-    @github_org = org
-
-    raise UsageError, "Must set a GitHub organisation!" unless @github_org
-
-    ENV["HOMEBREW_FORCE_HOMEBREW_ON_LINUX"] = "1" if @github_org == "homebrew" && !OS.mac?
-  end
 
   sig {
     params(
@@ -62,27 +56,27 @@ class GitHubPackages
     raise UsageError, "HOMEBREW_GITHUB_PACKAGES_USER is unset." if user.blank?
     raise UsageError, "HOMEBREW_GITHUB_PACKAGES_TOKEN is unset." if token.blank?
 
-    skopeo = [
-      which("skopeo"),
-      which("skopeo", ENV["HOMEBREW_PATH"]),
-      HOMEBREW_PREFIX/"bin/skopeo",
-    ].compact.first
-    unless skopeo.exist?
-      odie "no `skopeo` and HOMEBREW_FORCE_HOMEBREW_ON_LINUX is set!" if Homebrew::EnvConfig.force_homebrew_on_linux?
-
-      ohai "Installing `skopeo` for upload..."
-      safe_system HOMEBREW_BREW_FILE, "install", "--formula", "skopeo"
-      skopeo = Formula["skopeo"].opt_bin/"skopeo"
-    end
+    skopeo = ensure_executable!("skopeo", reason: "upload")
 
     require "json_schemer"
 
     load_schemas!
 
     bottles_hash.each do |formula_full_name, bottle_hash|
-      upload_bottle(user, token, skopeo, formula_full_name, bottle_hash,
-                    keep_old: keep_old, dry_run: dry_run, warn_on_error: warn_on_error)
+      # First, check that we won't encounter an error in the middle of uploading bottles.
+      preupload_check(user, token, skopeo, formula_full_name, bottle_hash,
+                      keep_old:, dry_run:, warn_on_error:)
     end
+
+    # We intentionally iterate over `bottles_hash` twice to
+    # avoid erroring out in the middle of uploading bottles.
+    # rubocop:disable Style/CombinableLoops
+    bottles_hash.each do |formula_full_name, bottle_hash|
+      # Next, upload the bottles after checking them all.
+      upload_bottle(user, token, skopeo, formula_full_name, bottle_hash,
+                    keep_old:, dry_run:, warn_on_error:)
+    end
+    # rubocop:enable Style/CombinableLoops
   end
 
   def self.version_rebuild(version, rebuild, bottle_tag = nil)
@@ -100,12 +94,12 @@ class GitHubPackages
   end
 
   def self.repo_without_prefix(repo)
-    # remove redundant repo prefix for a shorter name
+    # Remove redundant repository prefix for a shorter name.
     repo.delete_prefix("homebrew-")
   end
 
   def self.root_url(org, repo, prefix = URL_PREFIX)
-    # docker/skopeo insist on lowercase org ("repository name")
+    # `docker`/`skopeo` insist on lowercase organisation (“repository name”).
     org = org.downcase
 
     "#{prefix}#{org}/#{repo_without_prefix(repo)}"
@@ -121,18 +115,19 @@ class GitHubPackages
   end
 
   def self.image_formula_name(formula_name)
-    # invalid docker name characters
-    # / makes sense because we already use it to separate repo/formula
-    # x makes sense because we already use it in Formulary
+    # Invalid docker name characters:
+    # - `/` makes sense because we already use it to separate repository/formula.
+    # - `x` makes sense because we already use it in `Formulary`.
     formula_name.tr("@", "/")
                 .tr("+", "x")
   end
 
   def self.image_version_rebuild(version_rebuild)
-    # invalid docker tag characters
-    # TODO: consider changing the actual versions here and make an audit to
-    # avoid these weird characters being used
-    version_rebuild.gsub(/[+#~]/, ".")
+    return version_rebuild if version_rebuild.match?(VALID_OCI_TAG_REGEX)
+
+    odisabled "GitHub Packages versions that do not match #{VALID_OCI_TAG_REGEX.source}",
+              "declaring a new `version` without these characters"
+    version_rebuild.gsub(INVALID_OCI_TAG_CHARS_REGEX, ".")
   end
 
   private
@@ -172,8 +167,11 @@ class GitHubPackages
   end
 
   def schema_uri(basename, uris)
-    url = "https://raw.githubusercontent.com/opencontainers/image-spec/master/schema/#{basename}.json"
-    out, = curl_output(url)
+    # The current `main` version has an invalid JSON schema.
+    # Going forward, this should probably be pinned to tags.
+    # We currently use features newer than the last one (v1.0.2).
+    url = "https://raw.githubusercontent.com/opencontainers/image-spec/170393e57ed656f7f81c3070bfa8c3346eaa0a5a/schema/#{basename}.json"
+    out, = Utils::Curl.curl_output(url)
     json = JSON.parse(out)
 
     @schema_json ||= {}
@@ -194,9 +192,9 @@ class GitHubPackages
     puts
     ofail "#{Formatter.url(schema_uri)} JSON schema validation failed!"
     oh1 "Errors"
-    pp schema.validate(json).to_a
+    puts schema.validate(json).to_a.inspect
     oh1 "JSON"
-    pp json
+    puts json.inspect
     exit 1
   end
 
@@ -207,11 +205,11 @@ class GitHubPackages
       puts "#{skopeo} #{args.join(" ")} --src-creds=#{user}:$HOMEBREW_GITHUB_PACKAGES_TOKEN"
     else
       args << "--src-creds=#{user}:#{token}"
-      system_command!(skopeo, verbose: true, print_stdout: true, args: args)
+      system_command!(skopeo, verbose: true, print_stdout: true, args:)
     end
   end
 
-  def upload_bottle(user, token, skopeo, formula_full_name, bottle_hash, keep_old:, dry_run:, warn_on_error:)
+  def preupload_check(user, token, skopeo, _formula_full_name, bottle_hash, keep_old:, dry_run:, warn_on_error:)
     formula_name = bottle_hash["formula"]["name"]
 
     _, org, repo, = *bottle_hash["bottle"]["root_url"].match(URL_REGEX)
@@ -233,9 +231,9 @@ class GitHubPackages
       inspect_args << "--creds=#{user}:#{token}"
       inspect_result = system_command(skopeo, print_stderr: false, args: inspect_args)
 
-      # Order here is important
+      # Order here is important.
       if !inspect_result.status.success? && !inspect_result.stderr.match?(/(name|manifest) unknown/)
-        # We got an error, and it was not about the tag or package being unknown.
+        # We got an error and it was not about the tag or package being unknown.
         if warn_on_error
           opoo "#{image_uri} inspection returned an error, skipping upload!\n#{inspect_result.stderr}"
           return
@@ -243,11 +241,11 @@ class GitHubPackages
           odie "#{image_uri} inspection returned an error!\n#{inspect_result.stderr}"
         end
       elsif keep_old
-        # If the tag doesn't exist, ignore --keep-old.
+        # If the tag doesn't exist, ignore `--keep-old`.
         keep_old = false unless inspect_result.status.success?
         # Otherwise, do nothing - the tag already existing is expected behaviour for --keep-old.
       elsif inspect_result.status.success?
-        # The tag already exists, and we are not passing --keep-old.
+        # The tag already exists and we are not passing `--keep-old`.
         if warn_on_error
           opoo "#{image_uri} already exists, skipping upload!"
           return
@@ -257,12 +255,22 @@ class GitHubPackages
       end
     end
 
+    [formula_name, org, repo, version, rebuild, version_rebuild, image_name, image_uri, keep_old]
+  end
+
+  def upload_bottle(user, token, skopeo, formula_full_name, bottle_hash, keep_old:, dry_run:, warn_on_error:)
+    # We run the preupload check twice to prevent TOCTOU bugs.
+    result = preupload_check(user, token, skopeo, formula_full_name, bottle_hash,
+                             keep_old:, dry_run:, warn_on_error:)
+
+    formula_name, org, repo, version, rebuild, version_rebuild, image_name, image_uri, keep_old = *result
+
     root = Pathname("#{formula_name}--#{version_rebuild}")
     FileUtils.rm_rf root
     root.mkpath
 
     if keep_old
-      download(user, token, skopeo, image_uri, root, dry_run: dry_run)
+      download(user, token, skopeo, image_uri, root, dry_run:)
     else
       write_image_layout(root)
     end
@@ -273,13 +281,7 @@ class GitHubPackages
     git_path = bottle_hash["formula"]["tap_git_path"]
     git_revision = bottle_hash["formula"]["tap_git_revision"]
 
-    # we're uploading Homebrew/linuxbrew-core bottles to Linuxbrew with a core/
-    # prefix.
-    source_org_repo = if org.casecmp("linuxbrew").zero? && repo == "homebrew-core"
-      "Homebrew/linuxbrew-core"
-    else
-      "#{org}/#{repo}"
-    end
+    source_org_repo = "#{org}/#{repo}"
     source = "https://github.com/#{source_org_repo}/blob/#{git_revision.presence || "HEAD"}/#{git_path}"
 
     formula_core_tap = formula_full_name.exclude?("/")
@@ -312,7 +314,7 @@ class GitHubPackages
         "org.opencontainers.image.url"           => bottle_hash["formula"]["homepage"],
         "org.opencontainers.image.vendor"        => org,
         "org.opencontainers.image.version"       => version,
-      }.reject { |_, v| v.blank? }
+      }.compact_blank
       manifests = []
     end
 
@@ -357,34 +359,39 @@ class GitHubPackages
         os_version ||= "macOS #{bottle_tag.to_macos_version}"
       when "linux"
         os_version&.delete_suffix!(" LTS")
-        os_version ||= OS::CI_OS_VERSION
+        os_version ||= OS::LINUX_CI_OS_VERSION
         glibc_version = tab["built_on"]["glibc_version"].presence if tab["built_on"].present?
-        glibc_version ||= OS::CI_GLIBC_VERSION
+        glibc_version ||= OS::LINUX_GLIBC_CI_VERSION
         cpu_variant = tab["oldest_cpu_family"] || Hardware::CPU::INTEL_64BIT_OLDEST_CPU.to_s
       end
 
       platform_hash = {
-        architecture: architecture,
-        os: os,
+        architecture:,
+        os:,
         "os.version" => os_version,
-      }.reject { |_, v| v.blank? }
+      }.compact_blank
 
-      tar_sha256 = Digest::SHA256.hexdigest(
-        Utils.safe_popen_read("gunzip", "--stdout", "--decompress", local_file),
-      )
+      tar_sha256 = Digest::SHA256.new
+      Zlib::GzipReader.open(local_file) do |gz|
+        while (data = gz.read(GZIP_BUFFER_SIZE))
+          tar_sha256 << data
+        end
+      end
 
-      config_json_sha256, config_json_size = write_image_config(platform_hash, tar_sha256, blobs)
+      config_json_sha256, config_json_size = write_image_config(platform_hash, tar_sha256.hexdigest, blobs)
 
-      formulae_dir = tag_hash["formulae_brew_sh_path"]
-      documentation = "https://formulae.brew.sh/#{formulae_dir}/#{formula_name}" if formula_core_tap
+      documentation = "https://formulae.brew.sh/formula/#{formula_name}" if formula_core_tap
+
+      local_file_size = File.size(local_file)
 
       descriptor_annotations_hash = {
         "org.opencontainers.image.ref.name" => tag,
         "sh.brew.bottle.cpu.variant"        => cpu_variant,
         "sh.brew.bottle.digest"             => tar_gz_sha256,
         "sh.brew.bottle.glibc.version"      => glibc_version,
+        "sh.brew.bottle.size"               => local_file_size.to_s,
         "sh.brew.tab"                       => tab.to_json,
-      }.reject { |_, v| v.blank? }
+      }.compact_blank
 
       annotations_hash = formula_annotations_hash.merge(descriptor_annotations_hash).merge(
         {
@@ -392,7 +399,7 @@ class GitHubPackages
           "org.opencontainers.image.documentation" => documentation,
           "org.opencontainers.image.title"         => "#{formula_full_name} #{tag}",
         },
-      ).reject { |_, v| v.blank? }.sort.to_h
+      ).compact_blank.sort.to_h
 
       image_manifest = {
         schemaVersion: 2,
@@ -424,17 +431,27 @@ class GitHubPackages
     end
 
     index_json_sha256, index_json_size = write_image_index(manifests, blobs, formula_annotations_hash)
+    raise "Image index too large!" if index_json_size >= 4 * 1024 * 1024 # GitHub will error 500 if too large
 
     write_index_json(index_json_sha256, index_json_size, root,
                      "org.opencontainers.image.ref.name" => version_rebuild)
 
     puts
-    args = ["copy", "--all", "oci:#{root}", image_uri.to_s]
+    args = ["copy", "--retry-times=3", "--format=oci", "--all", "oci:#{root}", image_uri.to_s]
     if dry_run
       puts "#{skopeo} #{args.join(" ")} --dest-creds=#{user}:$HOMEBREW_GITHUB_PACKAGES_TOKEN"
     else
       args << "--dest-creds=#{user}:#{token}"
-      system_command!(skopeo, verbose: true, print_stdout: true, args: args)
+      retry_count = 0
+      begin
+        system_command!(skopeo, verbose: true, print_stdout: true, args:)
+      rescue ErrorDuringExecution
+        retry_count += 1
+        odie "Cannot perform an upload to registry after retrying multiple times!" if retry_count >= 10
+        sleep 2 ** retry_count
+        retry
+      end
+
       package_name = "#{GitHubPackages.repo_without_prefix(repo)}/#{image_name}"
       ohai "Uploaded to https://github.com/orgs/#{org}/packages/container/package/#{package_name}"
     end
@@ -449,7 +466,7 @@ class GitHubPackages
   def write_tar_gz(local_file, blobs)
     tar_gz_sha256 = Digest::SHA256.file(local_file)
                                   .hexdigest
-    FileUtils.cp local_file, blobs/tar_gz_sha256
+    FileUtils.ln local_file, blobs/tar_gz_sha256, force: true
     tar_gz_sha256
   end
 
@@ -467,8 +484,8 @@ class GitHubPackages
   def write_image_index(manifests, blobs, annotations)
     image_index = {
       schemaVersion: 2,
-      manifests:     manifests,
-      annotations:   annotations,
+      manifests:,
+      annotations:,
     }
     validate_schema!(IMAGE_INDEX_SCHEMA_URI, image_index)
     write_hash(blobs, image_index)
@@ -481,7 +498,7 @@ class GitHubPackages
         mediaType:   "application/vnd.oci.image.index.v1+json",
         digest:      "sha256:#{index_json_sha256}",
         size:        index_json_size,
-        annotations: annotations,
+        annotations:,
       }],
     }
     validate_schema!(IMAGE_INDEX_SCHEMA_URI, index_json)

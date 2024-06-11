@@ -1,12 +1,10 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "resource"
 require "erb"
 
 # Helper module for creating patches.
-#
-# @api private
 module Patch
   def self.create(strip, src, &block)
     case strip
@@ -26,17 +24,13 @@ module Patch
     when nil
       raise ArgumentError, "nil value for strip"
     else
-      raise ArgumentError, "unexpected value #{strip.inspect} for strip"
+      raise ArgumentError, "Unexpected value #{strip.inspect} for strip"
     end
   end
 end
 
 # An abstract class representing a patch embedded into a formula.
-#
-# @api private
 class EmbeddedPatch
-  extend T::Sig
-
   attr_writer :owner
   attr_reader :strip
 
@@ -64,11 +58,7 @@ class EmbeddedPatch
 end
 
 # A patch at the `__END__` of a formula file.
-#
-# @api private
 class DATAPatch < EmbeddedPatch
-  extend T::Sig
-
   attr_accessor :path
 
   def initialize(strip)
@@ -82,7 +72,7 @@ class DATAPatch < EmbeddedPatch
     path.open("rb") do |f|
       loop do
         line = f.gets
-        break if line.nil? || line =~ /^__END__$/
+        break if line.nil? || /^__END__$/.match?(line)
       end
       while (line = f.gets)
         data << line
@@ -93,8 +83,6 @@ class DATAPatch < EmbeddedPatch
 end
 
 # A string containing a patch.
-#
-# @api private
 class StringPatch < EmbeddedPatch
   def initialize(strip, str)
     super(strip)
@@ -107,11 +95,7 @@ class StringPatch < EmbeddedPatch
 end
 
 # A string containing a patch.
-#
-# @api private
 class ExternalPatch
-  extend T::Sig
-
   extend Forwardable
 
   attr_reader :resource, :strip
@@ -131,8 +115,8 @@ class ExternalPatch
   end
 
   def owner=(owner)
-    resource.owner   = owner
-    resource.version = resource.checksum || ERB::Util.url_encode(resource.url)
+    resource.owner = owner
+    resource.version(resource.checksum&.hexdigest || ERB::Util.url_encode(resource.url))
   end
 
   def apply
@@ -141,14 +125,14 @@ class ExternalPatch
       patch_dir = Pathname.pwd
       if patch_files.empty?
         children = patch_dir.children
-        if children.length != 1 || !children.first.file?
+        if children.length != 1 || !children.fetch(0).file?
           raise MissingApplyError, <<~EOS
             There should be exactly one patch file in the staging directory unless
             the "apply" method was used one or more times in the patch-do block.
           EOS
         end
 
-        patch_files << children.first.basename
+        patch_files << children.fetch(0).basename
       end
       dir = base_dir
       dir /= resource.directory if resource.directory.present?

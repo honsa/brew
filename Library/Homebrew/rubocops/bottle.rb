@@ -1,14 +1,12 @@
 # typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
     module FormulaAudit
       # This cop audits the `bottle` block in formulae.
-      #
-      # @api private
       class BottleFormat < FormulaCop
         extend AutoCorrector
 
@@ -54,8 +52,6 @@ module RuboCop
       end
 
       # This cop audits the indentation of the bottle tags in the `bottle` block in formulae.
-      #
-      # @api private
       class BottleTagIndentation < FormulaCop
         extend AutoCorrector
 
@@ -82,7 +78,7 @@ module RuboCop
 
             offending_node(hash)
             problem "Align bottle tags" do |corrector|
-              new_line = " " * (max_tag_column - tag_column) + hash.source
+              new_line = (" " * (max_tag_column - tag_column)) + hash.source
               corrector.replace(hash.source_range, new_line)
             end
           end
@@ -90,8 +86,6 @@ module RuboCop
       end
 
       # This cop audits the indentation of the sha256 digests in the`bottle` block in formulae.
-      #
-      # @api private
       class BottleDigestIndentation < FormulaCop
         extend AutoCorrector
 
@@ -118,7 +112,7 @@ module RuboCop
 
             offending_node(hash)
             problem "Align bottle digests" do |corrector|
-              new_line = " " * (max_digest_column - digest_column) + hash.source
+              new_line = (" " * (max_digest_column - digest_column)) + hash.source
               corrector.replace(hash.source_range, new_line)
             end
           end
@@ -126,8 +120,6 @@ module RuboCop
       end
 
       # This cop audits the order of the `bottle` block in formulae.
-      #
-      # @api private
       class BottleOrder < FormulaCop
         extend AutoCorrector
 

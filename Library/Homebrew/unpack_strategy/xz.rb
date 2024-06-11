@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking xz archives.
   class Xz
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -31,8 +27,8 @@ module UnpackStrategy
       quiet_flags = verbose ? [] : ["-q"]
       system_command! "unxz",
                       args:    [*quiet_flags, "-T0", "--", unpack_dir/basename],
-                      env:     { "PATH" => PATH.new(Formula["xz"].opt_bin, ENV["PATH"]) },
-                      verbose: verbose
+                      env:     { "PATH" => PATH.new(Formula["xz"].opt_bin, ENV.fetch("PATH")) },
+                      verbose:
     end
   end
 end

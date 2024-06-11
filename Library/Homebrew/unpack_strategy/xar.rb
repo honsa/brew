@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking xar archives.
   class Xar
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -25,7 +21,7 @@ module UnpackStrategy
     def extract_to_dir(unpack_dir, basename:, verbose:)
       system_command! "xar",
                       args:    ["-x", "-f", path, "-C", unpack_dir],
-                      verbose: verbose
+                      verbose:
     end
   end
 end

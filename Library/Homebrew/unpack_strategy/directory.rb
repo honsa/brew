@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking directories.
   class Directory
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -27,7 +23,7 @@ module UnpackStrategy
         system_command! "cp",
                         args:    ["-pR", (child.directory? && !child.symlink?) ? "#{child}/." : child,
                                   unpack_dir/child.basename],
-                        verbose: verbose
+                        verbose:
       end
     end
   end

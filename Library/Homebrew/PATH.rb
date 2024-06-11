@@ -1,12 +1,8 @@
 # typed: true
 # frozen_string_literal: true
 
-# Represention of a `*PATH` environment variable.
-#
-# @api private
+# Representation of a `*PATH` environment variable.
 class PATH
-  extend T::Sig
-
   include Enumerable
   extend Forwardable
 
@@ -63,7 +59,9 @@ class PATH
   def to_str
     @paths.join(File::PATH_SEPARATOR)
   end
-  alias to_s to_str
+
+  sig { returns(String) }
+  def to_s = to_str
 
   sig { params(other: T.untyped).returns(T::Boolean) }
   def ==(other)
@@ -79,7 +77,7 @@ class PATH
 
   sig { returns(T.nilable(T.self_type)) }
   def existing
-    existing_path = select(&File.method(:directory?))
+    existing_path = select { File.directory?(_1) }
     # return nil instead of empty PATH, to unset environment variables
     existing_path unless existing_path.empty?
   end

@@ -5,19 +5,16 @@ require "json"
 
 require "lazy_object"
 require "locale"
-
-require "extend/hash_validator"
-using HashValidator
+require "extend/hash/keys"
 
 module Cask
   # Configuration for installing casks.
   #
-  # @api private
+  # @api internal
   class Config
-    extend T::Sig
-
     DEFAULT_DIRS = {
       appdir:               "/Applications",
+      keyboard_layoutdir:   "/Library/Keyboard Layouts",
       colorpickerdir:       "~/Library/ColorPickers",
       prefpanedir:          "~/Library/PreferencePanes",
       qlplugindir:          "~/Library/QuickLook",
@@ -41,8 +38,10 @@ module Cask
 
     sig { params(args: Homebrew::CLI::Args).returns(T.attached_class) }
     def self.from_args(args)
+      args = T.unsafe(args)
       new(explicit: {
         appdir:               args.appdir,
+        keyboard_layoutdir:   args.keyboard_layoutdir,
         colorpickerdir:       args.colorpickerdir,
         prefpanedir:          args.prefpanedir,
         qlplugindir:          args.qlplugindir,
@@ -68,7 +67,7 @@ module Cask
         default:             config.fetch("default",  {}),
         env:                 config.fetch("env",      {}),
         explicit:            config.fetch("explicit", {}),
-        ignore_invalid_keys: ignore_invalid_keys,
+        ignore_invalid_keys:,
       )
     end
 
@@ -77,17 +76,22 @@ module Cask
         .returns(T::Hash[Symbol, T.any(String, Pathname, T::Array[String])])
     }
     def self.canonicalize(config)
-      config.map do |k, v|
+      config.to_h do |k, v|
         key = k.to_sym
 
         if DEFAULT_DIRS.key?(key)
+          raise TypeError, "Invalid path for default dir #{k}: #{v.inspect}" if v.is_a?(Array)
+
           [key, Pathname(v).expand_path]
         else
           [key, v]
         end
-      end.to_h
+      end
     end
 
+    # Get the explicit configuration.
+    #
+    # @api internal
     sig { returns(T::Hash[Symbol, T.any(String, Pathname, T::Array[String])]) }
     attr_accessor :explicit
 
@@ -110,8 +114,8 @@ module Cask
         return
       end
 
-      @env&.assert_valid_keys!(*self.class.defaults.keys)
-      @explicit.assert_valid_keys!(*self.class.defaults.keys)
+      @env&.assert_valid_keys(*self.class.defaults.keys)
+      @explicit.assert_valid_keys(*self.class.defaults.keys)
     end
 
     sig { returns(T::Hash[Symbol, T.any(String, Pathname, T::Array[String])]) }
@@ -151,9 +155,9 @@ module Cask
     sig { returns(T::Array[String]) }
     def languages
       [
-        *T.cast(explicit.fetch(:languages, []), T::Array[String]),
-        *T.cast(env.fetch(:languages, []), T::Array[String]),
-        *T.cast(default.fetch(:languages, []), T::Array[String]),
+        *explicit.fetch(:languages, []),
+        *env.fetch(:languages, []),
+        *default.fetch(:languages, []),
       ].uniq.select do |lang|
         # Ensure all languages are valid.
         Locale.parse(lang)
@@ -169,10 +173,12 @@ module Cask
 
     DEFAULT_DIRS.each_key do |dir|
       define_method(dir) do
+        T.bind(self, Config)
         explicit.fetch(dir, env.fetch(dir, default.fetch(dir)))
       end
 
       define_method(:"#{dir}=") do |path|
+        T.bind(self, Config)
         explicit[dir] = Pathname(path).expand_path
       end
     end
@@ -182,6 +188,11 @@ module Cask
       self.class.new(explicit: other.explicit.merge(explicit))
     end
 
+    # Get explicit configuration as a string.
+    #
+    # @api internal
+    #
+    # TODO: This is only used by `homebrew/bundle`, so move it there.
     sig { returns(String) }
     def explicit_s
       explicit.map do |key, value|
@@ -190,17 +201,17 @@ module Cask
           key = "language"
           value = T.cast(explicit.fetch(:languages, []), T::Array[String]).join(",")
         end
-        "#{key}: \"#{value.to_s.sub(/^#{ENV['HOME']}/, "~")}\""
+        "#{key}: \"#{value.to_s.sub(/^#{Dir.home}/, "~")}\""
       end.join(", ")
     end
 
     sig { params(options: T.untyped).returns(String) }
-    def to_json(**options)
+    def to_json(*options)
       {
-        default:  default,
-        env:      env,
-        explicit: explicit,
-      }.to_json(**options)
+        default:,
+        env:,
+        explicit:,
+      }.to_json(*options)
     end
   end
 end

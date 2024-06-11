@@ -1,10 +1,9 @@
-# typed: false
 # frozen_string_literal: true
 
 require "tab"
 require "formula"
 
-describe Tab do
+RSpec.describe Tab do
   alias_matcher :be_built_with, :be_with
 
   matcher :be_poured_from_bottle do
@@ -19,7 +18,7 @@ describe Tab do
     end
   end
 
-  subject(:tab) {
+  subject(:tab) do
     described_class.new(
       "homebrew_version"     => HOMEBREW_VERSION,
       "used_options"         => used_options.as_flags,
@@ -29,7 +28,6 @@ describe Tab do
       "changed_files"        => [],
       "time"                 => time,
       "source_modified_time" => 0,
-      "HEAD"                 => TEST_SHA1,
       "compiler"             => "clang",
       "stdlib"               => "libcxx",
       "runtime_dependencies" => [],
@@ -45,7 +43,7 @@ describe Tab do
       "arch"                 => Hardware::CPU.arch,
       "built_on"             => DevelopmentTools.build_system_info,
     )
-  }
+  end
 
   let(:time) { Time.now.to_i }
   let(:unused_options) { Options.create(%w[--with-baz --without-qux]) }
@@ -64,20 +62,19 @@ describe Tab do
     expect(tab.homebrew_version).to eq(HOMEBREW_VERSION)
     expect(tab.unused_options).to be_empty
     expect(tab.used_options).to be_empty
-    expect(tab.changed_files).to be nil
+    expect(tab.changed_files).to be_nil
     expect(tab).not_to be_built_as_bottle
     expect(tab).not_to be_poured_from_bottle
     expect(tab).to be_stable
     expect(tab).not_to be_head
-    expect(tab.tap).to be nil
-    expect(tab.time).to be nil
-    expect(tab.HEAD).to be nil
-    expect(tab.runtime_dependencies).to be nil
-    expect(tab.stable_version).to be nil
-    expect(tab.head_version).to be nil
+    expect(tab.tap).to be_nil
+    expect(tab.time).to be_nil
+    expect(tab.runtime_dependencies).to be_nil
+    expect(tab.stable_version).to be_nil
+    expect(tab.head_version).to be_nil
     expect(tab.cxxstdlib.compiler).to eq(DevelopmentTools.default_compiler)
-    expect(tab.cxxstdlib.type).to be nil
-    expect(tab.source["path"]).to be nil
+    expect(tab.cxxstdlib.type).to be_nil
+    expect(tab.source["path"]).to be_nil
   end
 
   specify "#include?" do
@@ -99,7 +96,7 @@ describe Tab do
     tab = described_class.new(homebrew_version: "1.2.3")
     expect(tab.parsed_homebrew_version).to eq("1.2.3")
     expect(tab.parsed_homebrew_version).to be < "1.2.3-1-g12789abdf"
-    expect(tab.parsed_homebrew_version).to be_kind_of(Version)
+    expect(tab.parsed_homebrew_version).to be_a(Version)
 
     tab.homebrew_version = "1.2.4-567-g12789abdf"
     expect(tab.parsed_homebrew_version).to be > "1.2.4"
@@ -114,25 +111,25 @@ describe Tab do
 
   specify "#runtime_dependencies" do
     tab = described_class.new
-    expect(tab.runtime_dependencies).to be nil
+    expect(tab.runtime_dependencies).to be_nil
 
     tab.homebrew_version = "1.1.6"
-    expect(tab.runtime_dependencies).to be nil
+    expect(tab.runtime_dependencies).to be_nil
 
     tab.runtime_dependencies = []
-    expect(tab.runtime_dependencies).not_to be nil
+    expect(tab.runtime_dependencies).not_to be_nil
 
     tab.homebrew_version = "1.1.5"
-    expect(tab.runtime_dependencies).to be nil
+    expect(tab.runtime_dependencies).to be_nil
 
     tab.homebrew_version = "1.1.7"
-    expect(tab.runtime_dependencies).not_to be nil
+    expect(tab.runtime_dependencies).not_to be_nil
 
     tab.homebrew_version = "1.1.10"
-    expect(tab.runtime_dependencies).not_to be nil
+    expect(tab.runtime_dependencies).not_to be_nil
 
     tab.runtime_dependencies = [{ "full_name" => "foo", "version" => "1.0" }]
-    expect(tab.runtime_dependencies).not_to be nil
+    expect(tab.runtime_dependencies).not_to be_nil
   end
 
   specify "::runtime_deps_hash" do
@@ -144,7 +141,8 @@ describe Tab do
     tab.homebrew_version = "1.1.6"
     tab.runtime_dependencies = runtime_deps_hash
     expect(tab.runtime_dependencies).to eql(
-      [{ "full_name" => "foo", "version" => "1.0", "declared_directly" => false }],
+      [{ "full_name" => "foo", "version" => "1.0", "revision" => 0, "pkg_version" => "1.0",
+"declared_directly" => false }],
     )
   end
 
@@ -154,7 +152,6 @@ describe Tab do
   end
 
   specify "other attributes" do
-    expect(tab.HEAD).to eq(TEST_SHA1)
     expect(tab.tap.name).to eq("homebrew/core")
     expect(tab.time).to eq(time)
     expect(tab).not_to be_built_as_bottle
@@ -179,7 +176,6 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
       expect(tab.runtime_dependencies).to eq(runtime_dependencies)
@@ -207,7 +203,6 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
       expect(tab.runtime_dependencies).to eq(runtime_dependencies)
@@ -229,10 +224,9 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
-      expect(tab.runtime_dependencies).to be nil
+      expect(tab.runtime_dependencies).to be_nil
     end
 
     it "raises a parse exception message including the Tab filename" do
@@ -248,6 +242,9 @@ describe Tab do
       # < 1.1.7 runtime dependencies were wrong so are ignored
       stub_const("HOMEBREW_VERSION", "1.1.7")
 
+      # don't try to load gcc/glibc
+      allow(DevelopmentTools).to receive_messages(needs_libc_formula?: false, needs_compiler_formula?: false)
+
       f = formula do
         url "foo-1.0"
         depends_on "bar"
@@ -255,9 +252,10 @@ describe Tab do
         depends_on "baz" => :build
       end
 
-      tap = Tap.new("user", "repo")
+      tap = Tap.fetch("user", "repo")
       from_tap = formula("from_tap", path: tap.path/"Formula/from_tap.rb") do
         url "from_tap-1.0"
+        revision 1
       end
       stub_formula_loader from_tap
 
@@ -269,8 +267,10 @@ describe Tab do
       tab = described_class.create(f, compiler, stdlib)
 
       runtime_dependencies = [
-        { "full_name" => "bar", "version" => "2.0", "declared_directly" => true },
-        { "full_name" => "user/repo/from_tap", "version" => "1.0", "declared_directly" => true },
+        { "full_name" => "bar", "version" => "2.0", "revision" => 0, "pkg_version" => "2.0",
+"declared_directly" => true },
+        { "full_name" => "user/repo/from_tap", "version" => "1.0", "revision" => 1, "pkg_version" => "1.0_1",
+"declared_directly" => true },
       ]
       expect(tab.runtime_dependencies).to eq(runtime_dependencies)
 
@@ -279,7 +279,7 @@ describe Tab do
 
     it "can create a Tab from an alias" do
       alias_path = CoreTap.instance.alias_dir/"bar"
-      f = formula(alias_path: alias_path) { url "foo-1.0" }
+      f = formula(alias_path:) { url "foo-1.0" }
       compiler = DevelopmentTools.default_compiler
       stdlib = :libcxx
       tab = described_class.create(f, compiler, stdlib)
@@ -313,7 +313,7 @@ describe Tab do
 
     it "can create a Tab for for a Formula from an alias" do
       alias_path = CoreTap.instance.alias_dir/"bar"
-      f = formula(alias_path: alias_path) { url "foo-1.0" }
+      f = formula(alias_path:) { url "foo-1.0" }
 
       tab = described_class.for_formula(f)
       expect(tab.source["path"]).to eq(alias_path.to_s)
@@ -331,7 +331,7 @@ describe Tab do
       f.prefix.mkpath
 
       tab = described_class.for_formula(f)
-      expect(tab.tabfile).to be nil
+      expect(tab.tabfile).to be_nil
     end
 
     it "can create a Tab for a Formula with multiple Kegs" do

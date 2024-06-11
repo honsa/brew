@@ -6,8 +6,6 @@ require_relative "directory"
 module UnpackStrategy
   # Strategy for unpacking Subversion repositories.
   class Subversion < Directory
-    using Magic
-
     def self.can_extract?(path)
       super && (path/".svn").directory?
     end
@@ -18,7 +16,7 @@ module UnpackStrategy
       system_command! "svn",
                       args:    ["export", "--force", ".", unpack_dir],
                       chdir:   path.to_s,
-                      verbose: verbose
+                      verbose:
     end
   end
 end

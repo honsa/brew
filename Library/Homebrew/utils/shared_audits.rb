@@ -2,15 +2,23 @@
 # frozen_string_literal: true
 
 require "utils/curl"
+require "utils/github/api"
 
 # Auditing functions for rules common to both casks and formulae.
-#
-# @api private
 module SharedAudits
-  include Utils::Curl
-  extend Utils::Curl
+  URL_TYPE_HOMEPAGE = "homepage URL"
 
   module_function
+
+  def eol_data(product, cycle)
+    @eol_data ||= {}
+    @eol_data["#{product}/#{cycle}"] ||= begin
+      out, _, status = Utils::Curl.curl_output("--location", "https://endoflife.date/api/#{product}/#{cycle}.json")
+      json = JSON.parse(out) if status.success?
+      json = nil if json&.dig("message")&.include?("Product not found")
+      json
+    end
+  end
 
   def github_repo_data(user, repo)
     @github_repo_data ||= {}
@@ -19,6 +27,8 @@ module SharedAudits
     @github_repo_data["#{user}/#{repo}"]
   rescue GitHub::API::HTTPNotFoundError
     nil
+  rescue GitHub::API::AuthenticationFailedError => e
+    raise unless e.message.match?(GitHub::API::GITHUB_IP_ALLOWLIST_ERROR)
   end
 
   def github_release_data(user, repo, tag)
@@ -30,6 +40,8 @@ module SharedAudits
     @github_release_data[id]
   rescue GitHub::API::HTTPNotFoundError
     nil
+  rescue GitHub::API::AuthenticationFailedError => e
+    raise unless e.message.match?(GitHub::API::GITHUB_IP_ALLOWLIST_ERROR)
   end
 
   def github_release(user, repo, tag, formula: nil, cask: nil)
@@ -37,9 +49,9 @@ module SharedAudits
     return unless release
 
     exception, name, version = if formula
-      [tap_audit_exception(:github_prerelease_allowlist, formula.tap, formula.name), formula.name, formula.version]
+      [formula.tap&.audit_exception(:github_prerelease_allowlist, formula.name), formula.name, formula.version]
     elsif cask
-      [tap_audit_exception(:github_prerelease_allowlist, cask.tap, cask.token), cask.token, cask.version]
+      [cask.tap&.audit_exception(:github_prerelease_allowlist, cask.token), cask.token, cask.version]
     end
 
     return "#{tag} is a GitHub pre-release." if release["prerelease"] && [version, "all"].exclude?(exception)
@@ -48,14 +60,16 @@ module SharedAudits
       return "#{tag} is not a GitHub pre-release but '#{name}' is in the GitHub prerelease allowlist."
     end
 
-    return "#{tag} is a GitHub draft." if release["draft"]
+    "#{tag} is a GitHub draft." if release["draft"]
   end
 
   def gitlab_repo_data(user, repo)
     @gitlab_repo_data ||= {}
     @gitlab_repo_data["#{user}/#{repo}"] ||= begin
-      out, _, status = curl_output("https://gitlab.com/api/v4/projects/#{user}%2F#{repo}")
-      JSON.parse(out) if status.success?
+      out, _, status = Utils::Curl.curl_output("https://gitlab.com/api/v4/projects/#{user}%2F#{repo}")
+      json = JSON.parse(out) if status.success?
+      json = nil if json&.dig("message")&.include?("404 Project Not Found")
+      json
     end
   end
 
@@ -63,7 +77,7 @@ module SharedAudits
     id = "#{user}/#{repo}/#{tag}"
     @gitlab_release_data ||= {}
     @gitlab_release_data[id] ||= begin
-      out, _, status = curl_output(
+      out, _, status = Utils::Curl.curl_output(
         "https://gitlab.com/api/v4/projects/#{user}%2F#{repo}/releases/#{tag}", "--fail"
       )
       JSON.parse(out) if status.success?
@@ -77,9 +91,9 @@ module SharedAudits
     return if DateTime.parse(release["released_at"]) <= DateTime.now
 
     exception, version = if formula
-      [tap_audit_exception(:gitlab_prerelease_allowlist, formula.tap, formula.name), formula.version]
+      [formula.tap&.audit_exception(:gitlab_prerelease_allowlist, formula.name), formula.version]
     elsif cask
-      [tap_audit_exception(:gitlab_prerelease_allowlist, cask.tap, cask.token), cask.version]
+      [cask.tap&.audit_exception(:gitlab_prerelease_allowlist, cask.token), cask.version]
     end
     return if [version, "all"].include?(exception)
 
@@ -120,22 +134,22 @@ module SharedAudits
 
   def bitbucket(user, repo)
     api_url = "https://api.bitbucket.org/2.0/repositories/#{user}/#{repo}"
-    out, _, status= curl_output("--request", "GET", api_url)
+    out, _, status = Utils::Curl.curl_output("--request", "GET", api_url)
     return unless status.success?
 
     metadata = JSON.parse(out)
     return if metadata.nil?
 
-    return "Uses deprecated mercurial support in Bitbucket" if metadata["scm"] == "hg"
+    return "Uses deprecated Mercurial support in Bitbucket" if metadata["scm"] == "hg"
 
     return "Bitbucket fork (not canonical repository)" unless metadata["parent"].nil?
 
     return "Bitbucket repository too new (<30 days old)" if Date.parse(metadata["created_on"]) >= (Date.today - 30)
 
-    forks_out, _, forks_status= curl_output("--request", "GET", "#{api_url}/forks")
+    forks_out, _, forks_status = Utils::Curl.curl_output("--request", "GET", "#{api_url}/forks")
     return unless forks_status.success?
 
-    watcher_out, _, watcher_status= curl_output("--request", "GET", "#{api_url}/watchers")
+    watcher_out, _, watcher_status = Utils::Curl.curl_output("--request", "GET", "#{api_url}/watchers")
     return unless watcher_status.success?
 
     forks_metadata = JSON.parse(forks_out)
@@ -151,7 +165,7 @@ module SharedAudits
 
   def github_tag_from_url(url)
     url = url.to_s
-    tag = url.match(%r{^https://github\.com/[\w-]+/[\w-]+/archive/([^/]+)\.(tar\.gz|zip)$})
+    tag = url.match(%r{^https://github\.com/[\w-]+/[\w-]+/archive/refs/tags/([^/]+)\.(tar\.gz|zip)$})
              .to_a
              .second
     tag ||= url.match(%r{^https://github\.com/[\w-]+/[\w-]+/releases/download/([^/]+)/})
@@ -165,22 +179,5 @@ module SharedAudits
     url.match(%r{^https://gitlab\.com/[\w-]+/[\w-]+/-/archive/([^/]+)/})
        .to_a
        .second
-  end
-
-  def tap_audit_exception(list, tap, formula_or_cask, value = nil)
-    return false if tap.audit_exceptions.blank?
-    return false unless tap.audit_exceptions.key? list
-
-    list = tap.audit_exceptions[list]
-
-    case list
-    when Array
-      list.include? formula_or_cask
-    when Hash
-      return false if list.exclude? formula_or_cask
-      return list[formula_or_cask] if value.blank?
-
-      list[formula_or_cask] == value
-    end
   end
 end

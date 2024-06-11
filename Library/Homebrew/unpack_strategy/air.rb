@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking Adobe Air archives.
   class Air
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -35,7 +31,7 @@ module UnpackStrategy
     def extract_to_dir(unpack_dir, basename:, verbose:)
       system_command! AIR_APPLICATION_INSTALLER,
                       args:    ["-silent", "-location", unpack_dir, path],
-                      verbose: verbose
+                      verbose:
     end
   end
 end

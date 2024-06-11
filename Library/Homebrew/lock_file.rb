@@ -4,8 +4,6 @@
 require "fcntl"
 
 # A lock file.
-#
-# @api private
 class LockFile
   attr_reader :path
 
@@ -42,14 +40,16 @@ class LockFile
   def create_lockfile
     return if @lockfile.present? && !@lockfile.closed?
 
-    @lockfile = @path.open(File::RDWR | File::CREAT)
+    begin
+      @lockfile = @path.open(File::RDWR | File::CREAT)
+    rescue Errno::EMFILE
+      odie "The maximum number of open files on this system has been reached. Use `ulimit -n` to increase this limit."
+    end
     @lockfile.fcntl(Fcntl::F_SETFD, Fcntl::FD_CLOEXEC)
   end
 end
 
 # A lock file for a formula.
-#
-# @api private
 class FormulaLock < LockFile
   def initialize(name)
     super("#{name}.formula")
@@ -57,8 +57,6 @@ class FormulaLock < LockFile
 end
 
 # A lock file for a cask.
-#
-# @api private
 class CaskLock < LockFile
   def initialize(name)
     super("#{name}.cask")

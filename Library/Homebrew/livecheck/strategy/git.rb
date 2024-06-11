@@ -1,7 +1,8 @@
-# typed: false
+# typed: strict
 # frozen_string_literal: true
 
 require "open3"
+require "system_command"
 
 module Homebrew
   module Livecheck
@@ -12,7 +13,7 @@ module Homebrew
       # Livecheck has historically prioritized the {Git} strategy over others
       # and this behavior was continued when the priority setup was created.
       # This is partly related to Livecheck checking formula URLs in order of
-      # `head`, `stable`, and then `homepage`. The higher priority here may
+      # `head`, `stable` and then `homepage`. The higher priority here may
       # be removed (or altered) in the future if we reevaluate this particular
       # behavior.
       #
@@ -24,7 +25,7 @@ module Homebrew
       #
       # @api public
       class Git
-        extend T::Sig
+        extend SystemCommand::Mixin
 
         # The priority of the strategy on an informal scale of 1 to 10 (from
         # lowest to highest).
@@ -32,7 +33,7 @@ module Homebrew
 
         # The default regex used to naively identify versions from tags when a
         # regex isn't provided.
-        DEFAULT_REGEX = /\D*(.+)/.freeze
+        DEFAULT_REGEX = /\D*(.+)/
 
         # Whether the strategy can be applied to the provided URL.
         #
@@ -52,24 +53,23 @@ module Homebrew
         # @return [Hash]
         sig { params(url: String, regex: T.nilable(Regexp)).returns(T::Hash[Symbol, T.untyped]) }
         def self.tag_info(url, regex = nil)
-          # Open3#capture3 is used here because we need to capture stderr
-          # output and handle it in an appropriate manner. Alternatives like
-          # SystemCommand always print errors (as well as debug output) and
-          # don't meet the same goals.
-          stdout_str, stderr_str, _status = Open3.capture3(
-            { "GIT_TERMINAL_PROMPT" => "0" }, "git", "ls-remote", "--tags", url
+          stdout, stderr, _status = system_command(
+            "git",
+            args:         ["ls-remote", "--tags", url],
+            env:          { "GIT_TERMINAL_PROMPT" => "0" },
+            print_stdout: false,
+            print_stderr: false,
+            debug:        false,
+            verbose:      false,
           )
 
           tags_data = { tags: [] }
-          tags_data[:messages] = stderr_str.split("\n") if stderr_str.present?
-          return tags_data if stdout_str.blank?
+          tags_data[:messages] = stderr.split("\n") if stderr.present?
+          return tags_data if stdout.blank?
 
-          # Isolate tag strings by removing leading/trailing text
-          stdout_str.gsub!(%r{^.*\trefs/tags/}, "")
-          stdout_str.gsub!("^{}", "")
-
-          tags = stdout_str.split("\n").uniq.sort
-          tags.select! { |t| t =~ regex } if regex
+          # Isolate tag strings and filter by regex
+          tags = stdout.gsub(%r{^.*\trefs/tags/|\^{}$}, "").split("\n").uniq.sort
+          tags.select! { |t| regex.match?(t) } if regex
           tags_data[:tags] = tags
 
           tags_data
@@ -86,31 +86,32 @@ module Homebrew
           params(
             tags:  T::Array[String],
             regex: T.nilable(Regexp),
-            block: T.nilable(
-              T.proc.params(arg0: T::Array[String], arg1: T.nilable(Regexp))
-                .returns(T.any(String, T::Array[String], NilClass)),
-            ),
+            block: T.nilable(Proc),
           ).returns(T::Array[String])
         }
         def self.versions_from_tags(tags, regex = nil, &block)
-          return Strategy.handle_block_return(block.call(tags, regex || DEFAULT_REGEX)) if block
+          if block
+            block_return_value = if regex.present?
+              yield(tags, regex)
+            elsif block.arity == 2
+              yield(tags, DEFAULT_REGEX)
+            else
+              yield(tags)
+            end
+            return Strategy.handle_block_return(block_return_value)
+          end
 
-          tags_only_debian = tags.all? { |tag| tag.start_with?("debian/") }
-
-          tags.map do |tag|
-            # Skip tag if it has a 'debian/' prefix and upstream does not do
-            # only 'debian/' prefixed tags
-            next if tag =~ %r{^debian/} && !tags_only_debian
-
+          tags.filter_map do |tag|
             if regex
               # Use the first capture group (the version)
-              tag.scan(regex).first&.first
+              # This code is not typesafe unless the regex includes a capture group
+              T.unsafe(tag.scan(regex).first)&.first
             else
               # Remove non-digits from the start of the tag and use that as the
               # version text
               tag[DEFAULT_REGEX, 1]
             end
-          end.compact.uniq
+          end.uniq
         end
 
         # Checks the Git tags for new versions. When a regex isn't provided,
@@ -124,15 +125,12 @@ module Homebrew
           params(
             url:     String,
             regex:   T.nilable(Regexp),
-            _unused: T.nilable(T::Hash[Symbol, T.untyped]),
-            block:   T.nilable(
-              T.proc.params(arg0: T::Array[String], arg1: T.nilable(Regexp))
-                .returns(T.any(String, T::Array[String], NilClass)),
-            ),
+            _unused: T.untyped,
+            block:   T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
         def self.find_versions(url:, regex: nil, **_unused, &block)
-          match_data = { matches: {}, regex: regex, url: url }
+          match_data = { matches: {}, regex:, url: }
 
           tags_data = tag_info(url, regex)
           tags = tags_data[:tags]

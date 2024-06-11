@@ -5,17 +5,16 @@ updates:
     directory: /
     schedule:
       interval: daily
+    allow:
+      - dependency-type: all
     # The actions in triage-issues.yml are updated in the Homebrew/.github repo
     ignore:
       - dependency-name: actions/stale
       - dependency-name: dessant/lock-threads
-
-  - package-ecosystem: bundler
-    directory: /docs
-    schedule:
-      interval: weekly
-    allow:
-      - dependency-type: all
+    groups:
+      artifacts:
+        patterns:
+          - actions/*-artifact
 
   - package-ecosystem: bundler
     directory: /Library/Homebrew
@@ -23,5 +22,31 @@ updates:
       interval: daily
     allow:
       - dependency-type: all
-    ignore:
-      - dependency-name: sorbet-runtime
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all

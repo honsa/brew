@@ -4,20 +4,22 @@
 require "warning"
 
 # Helper module for handling warnings.
-#
-# @api private
 module Warnings
-  module_function
-
   COMMON_WARNINGS = {
     parser_syntax: [
       %r{warning: parser/current is loading parser/ruby\d+, which recognizes},
       /warning: \d+\.\d+\.\d+-compliant syntax, but you are running \d+\.\d+\.\d+\./,
+      # FIXME: https://github.com/errata-ai/vale/issues/818
+      # <!-- vale off -->
       %r{warning: please see https://github\.com/whitequark/parser#compatibility-with-ruby-mri\.},
+      # <!-- vale on -->
+    ],
+    default_gems:  [
+      /warning: .+\.rb was loaded from the standard library, .+ default gems since Ruby \d+\.\d+\.\d+\./,
     ],
   }.freeze
 
-  def ignore(*warnings)
+  def self.ignore(*warnings)
     warnings.map! do |warning|
       next warning if !warning.is_a?(Symbol) || !COMMON_WARNINGS.key?(warning)
 

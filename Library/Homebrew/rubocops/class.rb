@@ -1,14 +1,12 @@
 # typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
     module FormulaAudit
       # This cop makes sure that {Formula} is used as superclass.
-      #
-      # @api private
       class ClassName < FormulaCop
         extend AutoCorrector
 
@@ -29,8 +27,6 @@ module RuboCop
       end
 
       # This cop makes sure that a `test` block contains a proper test.
-      #
-      # @api private
       class Test < FormulaCop
         extend AutoCorrector
 
@@ -72,12 +68,11 @@ module RuboCop
 
     module FormulaAuditStrict
       # This cop makes sure that a `test` block exists.
-      #
-      # @api private
       class TestPresent < FormulaCop
-        def audit_formula(_node, _class_node, _parent_class_node, body_node)
+        def audit_formula(_node, class_node, _parent_class_node, body_node)
           return if find_block(body_node, :test)
 
+          offending_node(class_node) if body_node.nil?
           problem "A `test do` test block should be added"
         end
       end

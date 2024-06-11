@@ -1,9 +1,8 @@
-# typed: false
 # frozen_string_literal: true
 
 require "sandbox"
 
-describe Sandbox, :needs_macos do
+RSpec.describe Sandbox, :needs_macos do
   define_negated_matcher :not_matching, :matching
 
   subject(:sandbox) { described_class.new }
@@ -16,7 +15,7 @@ describe Sandbox, :needs_macos do
   end
 
   specify "#allow_write" do
-    sandbox.allow_write file
+    sandbox.allow_write path: file
     sandbox.exec "touch", file
 
     expect(file).to exist
@@ -24,9 +23,9 @@ describe Sandbox, :needs_macos do
 
   describe "#exec" do
     it "fails when writing to file not specified with ##allow_write" do
-      expect {
+      expect do
         sandbox.exec "touch", file
-      }.to raise_error(ErrorDuringExecution)
+      end.to raise_error(ErrorDuringExecution)
 
       expect(file).not_to exist
     end

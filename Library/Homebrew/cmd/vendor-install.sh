@@ -3,7 +3,7 @@
 #:
 #:  Install Homebrew's portable Ruby.
 
-# HOMEBREW_CURLRC, HOMEBREW_LIBRARY, HOMEBREW_STDERR is from the user environment
+# HOMEBREW_CURLRC, HOMEBREW_LIBRARY is from the user environment
 # HOMEBREW_CACHE, HOMEBREW_CURL, HOMEBREW_LINUX, HOMEBREW_LINUX_MINIMUM_GLIBC_VERSION, HOMEBREW_MACOS,
 # HOMEBREW_MACOS_VERSION_NUMERIC and HOMEBREW_PROCESSOR are set by brew.sh
 # shellcheck disable=SC2154
@@ -12,43 +12,58 @@ source "${HOMEBREW_LIBRARY}/Homebrew/utils/lock.sh"
 VENDOR_DIR="${HOMEBREW_LIBRARY}/Homebrew/vendor"
 
 # Built from https://github.com/Homebrew/homebrew-portable-ruby.
-if [[ -n "${HOMEBREW_MACOS}" ]]
-then
-  if [[ "${HOMEBREW_PROCESSOR}" == "Intel" ]]
+set_ruby_variables() {
+  if [[ -n "${HOMEBREW_MACOS}" ]]
   then
-    ruby_FILENAME="portable-ruby-2.6.3_2.yosemite.bottle.tar.gz"
-    ruby_SHA="b065e5e3783954f3e65d8d3a6377ca51649bfcfa21b356b0dd70490f74c6bd86"
+    if [[ "${VENDOR_PHYSICAL_PROCESSOR}" == "x86_64" ]] ||
+       # Handle the case where /usr/local/bin/brew is run under arm64.
+       # It's a x86_64 installation there (we refuse to install arm64 binaries) so
+       # use a x86_64 Portable Ruby.
+       [[ "${VENDOR_PHYSICAL_PROCESSOR}" == "arm64" && "${HOMEBREW_PREFIX}" == "/usr/local" ]]
+    then
+      ruby_FILENAME="portable-ruby-3.3.2.el_capitan.bottle.tar.gz"
+      ruby_SHA="5c86a23e0e3caee1a4cfd958ed7d50a38e752ebaf2e7c5717e5c8eabaa6e9f12"
+    elif [[ "${VENDOR_PHYSICAL_PROCESSOR}" == "arm64" ]]
+    then
+      ruby_FILENAME="portable-ruby-3.3.2.arm64_big_sur.bottle.tar.gz"
+      ruby_SHA="bbb73a9d86fa37128c54c74b020096a646c46c525fd5eb0c4a2467551fb2d377"
+    fi
+  elif [[ -n "${HOMEBREW_LINUX}" ]]
+  then
+    case "${VENDOR_PROCESSOR}" in
+      x86_64)
+        ruby_FILENAME="portable-ruby-3.3.2.x86_64_linux.bottle.tar.gz"
+        ruby_SHA="dd3cffcc524de404e87bef92d89f3694a9ef13f2586a6dce4807456f1b30c7b0"
+        ;;
+      *) ;;
+    esac
   fi
-elif [[ -n "${HOMEBREW_LINUX}" ]]
-then
-  case "${HOMEBREW_PROCESSOR}" in
-    x86_64)
-      ruby_FILENAME="portable-ruby-2.6.3_2.x86_64_linux.bottle.tar.gz"
-      ruby_SHA="97e639a64dcec285392b53ad804b5334c324f1d2a8bdc2b5087b8bf8051e332f"
-      ;;
-    *) ;;
-  esac
-fi
 
-# Dynamic variables can't be detected by shellcheck
-# shellcheck disable=SC2034
-if [[ -n "${ruby_SHA}" && -n "${ruby_FILENAME}" ]]
-then
-  ruby_URLs=()
-  if [[ -n "${HOMEBREW_ARTIFACT_DOMAIN}" ]]
+  # Dynamic variables can't be detected by shellcheck
+  # shellcheck disable=SC2034
+  if [[ -n "${ruby_SHA}" && -n "${ruby_FILENAME}" ]]
   then
-    ruby_URLs+=("${HOMEBREW_ARTIFACT_DOMAIN}/v2/homebrew/portable-ruby/portable-ruby/blobs/sha256:${ruby_SHA}")
+    ruby_URLs=()
+    if [[ -n "${HOMEBREW_ARTIFACT_DOMAIN}" ]]
+    then
+      ruby_URLs+=("${HOMEBREW_ARTIFACT_DOMAIN}/v2/homebrew/portable-ruby/portable-ruby/blobs/sha256:${ruby_SHA}")
+      if [[ -n "${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK}" ]]
+      then
+        ruby_URL="${ruby_URLs[0]}"
+        return
+      fi
+    fi
+    if [[ -n "${HOMEBREW_BOTTLE_DOMAIN}" ]]
+    then
+      ruby_URLs+=("${HOMEBREW_BOTTLE_DOMAIN}/bottles-portable-ruby/${ruby_FILENAME}")
+    fi
+    ruby_URLs+=(
+      "https://ghcr.io/v2/homebrew/portable-ruby/portable-ruby/blobs/sha256:${ruby_SHA}"
+      "https://github.com/Homebrew/homebrew-portable-ruby/releases/download/3.3.2/${ruby_FILENAME}"
+    )
+    ruby_URL="${ruby_URLs[0]}"
   fi
-  if [[ -n "${HOMEBREW_BOTTLE_DOMAIN}" ]]
-  then
-    ruby_URLs+=("${HOMEBREW_BOTTLE_DOMAIN}/bottles-portable-ruby/${ruby_FILENAME}")
-  fi
-  ruby_URLs+=(
-    "https://ghcr.io/v2/homebrew/portable-ruby/portable-ruby/blobs/sha256:${ruby_SHA}"
-    "https://github.com/Homebrew/homebrew-portable-ruby/releases/download/2.6.3_2/${ruby_FILENAME}"
-  )
-  ruby_URL="${ruby_URLs[0]}"
-fi
+}
 
 check_linux_glibc_version() {
   if [[ -z "${HOMEBREW_LINUX}" || -z "${HOMEBREW_LINUX_MINIMUM_GLIBC_VERSION}" ]]
@@ -77,16 +92,6 @@ check_linux_glibc_version() {
   fi
 }
 
-# Execute the specified command, and suppress stderr unless HOMEBREW_STDERR is set.
-quiet_stderr() {
-  if [[ -z "${HOMEBREW_STDERR}" ]]
-  then
-    command "$@" 2>/dev/null
-  else
-    command "$@"
-  fi
-}
-
 fetch() {
   local -a curl_args
   local url
@@ -103,6 +108,9 @@ fetch() {
   if [[ -z "${HOMEBREW_CURLRC}" ]]
   then
     curl_args[${#curl_args[*]}]="-q"
+  elif [[ "${HOMEBREW_CURLRC}" == /* ]]
+  then
+    curl_args+=("-q" "--config" "${HOMEBREW_CURLRC}")
   fi
 
   # Authorization is needed for GitHub Packages but harmless on GitHub Releases
@@ -111,7 +119,7 @@ fetch() {
     --remote-time
     --location
     --user-agent "${HOMEBREW_USER_AGENT_CURL}"
-    --header "Authorization: Bearer QQ=="
+    --header "Authorization: ${HOMEBREW_GITHUB_PACKAGES_AUTH}"
   )
 
   if [[ -n "${HOMEBREW_QUIET}" ]]
@@ -141,7 +149,7 @@ fetch() {
       first_try=''
       if [[ -f "${temporary_path}" ]]
       then
-        # HOMEBREW_CURL is set by brew.sh (and isn't mispelt here)
+        # HOMEBREW_CURL is set by brew.sh (and isn't misspelt here)
         # shellcheck disable=SC2153
         "${HOMEBREW_CURL}" "${curl_args[@]}" -C - "${url}" -o "${temporary_path}"
         if [[ $? -eq 33 ]]
@@ -178,21 +186,33 @@ EOS
   if [[ -x "/usr/bin/shasum" ]]
   then
     sha="$(/usr/bin/shasum -a 256 "${CACHED_LOCATION}" | cut -d' ' -f1)"
-  elif [[ -x "$(type -P sha256sum)" ]]
+  fi
+
+  if [[ -z "${sha}" && -x "$(type -P sha256sum)" ]]
   then
     sha="$(sha256sum "${CACHED_LOCATION}" | cut -d' ' -f1)"
-  elif [[ -x "$(type -P ruby)" ]]
+  fi
+
+  if [[ -z "${sha}" ]]
   then
-    sha="$(
-      ruby <<EOSCRIPT
+    if [[ -x "$(type -P ruby)" ]]
+    then
+      sha="$(
+        ruby <<EOSCRIPT
 require 'digest/sha2'
 digest = Digest::SHA256.new
 File.open('${CACHED_LOCATION}', 'rb') { |f| digest.update(f.read) }
 puts digest.hexdigest
 EOSCRIPT
-    )"
-  else
-    odie "Cannot verify checksum ('shasum' or 'sha256sum' not found)!"
+      )"
+    else
+      odie "Cannot verify checksum ('shasum', 'sha256sum' and 'ruby' not found)!"
+    fi
+  fi
+
+  if [[ -z "${sha}" ]]
+  then
+    odie "Could not get checksum ('shasum', 'sha256sum' and 'ruby' produced no output)!"
   fi
 
   if [[ "${sha}" != "${VENDOR_SHA}" ]]
@@ -230,9 +250,16 @@ install() {
   safe_cd "${VENDOR_DIR}"
   [[ -n "${HOMEBREW_QUIET}" ]] || ohai "Pouring ${VENDOR_FILENAME}" >&2
   tar "${tar_args}" "${CACHED_LOCATION}"
+
+  if [[ "${VENDOR_PROCESSOR}" != "${HOMEBREW_PROCESSOR}" ]] ||
+     [[ "${VENDOR_PHYSICAL_PROCESSOR}" != "${HOMEBREW_PHYSICAL_PROCESSOR}" ]]
+  then
+    return 0
+  fi
+
   safe_cd "${VENDOR_DIR}/portable-${VENDOR_NAME}"
 
-  if quiet_stderr "./${VENDOR_VERSION}/bin/${VENDOR_NAME}" --version >/dev/null
+  if "./${VENDOR_VERSION}/bin/${VENDOR_NAME}" --version >/dev/null
   then
     ln -sfn "${VENDOR_VERSION}" current
     if [[ -d "${VENDOR_VERSION}.reinstall" ]]
@@ -273,14 +300,41 @@ homebrew-vendor-install() {
         [[ "${option}" == *d* ]] && HOMEBREW_DEBUG=1
         ;;
       *)
-        [[ -n "${VENDOR_NAME}" ]] && odie "This command does not take multiple vendor targets!"
-        VENDOR_NAME="${option}"
+        if [[ -n "${VENDOR_NAME}" ]]
+        then
+          if [[ -n "${HOMEBREW_DEVELOPER}" ]]
+          then
+            if [[ -n "${PROCESSOR_TARGET}" ]]
+            then
+              odie "This command does not take more than vendor and processor targets!"
+            else
+              VENDOR_PHYSICAL_PROCESSOR="${option}"
+              VENDOR_PROCESSOR="${option}"
+            fi
+          else
+            odie "This command does not take multiple vendor targets!"
+          fi
+        else
+          VENDOR_NAME="${option}"
+        fi
         ;;
     esac
   done
 
   [[ -z "${VENDOR_NAME}" ]] && odie "This command requires a vendor target!"
   [[ -n "${HOMEBREW_DEBUG}" ]] && set -x
+
+  if [[ -z "${VENDOR_PHYSICAL_PROCESSOR}" ]]
+  then
+    VENDOR_PHYSICAL_PROCESSOR="${HOMEBREW_PHYSICAL_PROCESSOR}"
+  fi
+
+  if [[ -z "${VENDOR_PROCESSOR}" ]]
+  then
+    VENDOR_PROCESSOR="${HOMEBREW_PROCESSOR}"
+  fi
+
+  set_ruby_variables
   check_linux_glibc_version
 
   filename_var="${VENDOR_NAME}_FILENAME"

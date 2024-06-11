@@ -3,15 +3,13 @@
 
 require "os/mac/xcode"
 
-# @private
 class DevelopmentTools
   class << self
-    extend T::Sig
-
     alias generic_locate locate
     undef installed?, default_compiler, curl_handles_most_https_certificates?,
           subversion_handles_most_https_certificates?
 
+    sig { params(tool: T.any(String, Symbol)).returns(T.nilable(Pathname)) }
     def locate(tool)
       (@locate ||= {}).fetch(tool) do |key|
         @locate[key] = if (located_tool = generic_locate(tool))
@@ -26,6 +24,7 @@ class DevelopmentTools
     # Checks if the user has any developer tools installed, either via Xcode
     # or the CLT. Convenient for guarding against formula builds when building
     # is impossible.
+    sig { returns(T::Boolean) }
     def installed?
       MacOS::Xcode.installed? || MacOS::CLT.installed?
     end
@@ -33,6 +32,18 @@ class DevelopmentTools
     sig { returns(Symbol) }
     def default_compiler
       :clang
+    end
+
+    sig { returns(Version) }
+    def ld64_version
+      @ld64_version ||= begin
+        json = Utils.popen_read("/usr/bin/ld", "-version_details")
+        if $CHILD_STATUS.success?
+          Version.parse(JSON.parse(json)["version"])
+        else
+          Version::NULL
+        end
+      end
     end
 
     sig { returns(T::Boolean) }
@@ -62,6 +73,7 @@ class DevelopmentTools
       EOS
     end
 
+    sig { returns(T::Hash[String, T.nilable(String)]) }
     def build_system_info
       build_info = {
         "xcode"          => MacOS::Xcode.version.to_s.presence,

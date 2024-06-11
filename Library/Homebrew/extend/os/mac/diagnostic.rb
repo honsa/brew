@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 module Homebrew
@@ -96,7 +96,7 @@ module Homebrew
 
         gnubin = %W[#{findutils.opt_libexec}/gnubin #{findutils.libexec}/gnubin]
         default_names = Tab.for_name("findutils").with? "default-names"
-        return if !default_names && (paths & gnubin).empty?
+        return if !default_names && !paths.intersect?(gnubin)
 
         <<~EOS
           Putting non-prefixed findutils in your path can cause python builds to fail.
@@ -134,7 +134,11 @@ module Homebrew
         # `brew test-bot` runs `brew doctor` in the CI for the Homebrew/brew
         # repository. This only needs to support whatever CI providers
         # Homebrew/brew is currently using.
-        return if ENV["GITHUB_ACTIONS"]
+        return if GitHub::Actions.env_set?
+
+        # With fake El Capitan for Portable Ruby, we are intentionally not using Xcode 8.
+        # This is because we are not using the CLT and Xcode 8 has the 10.12 SDK.
+        return if ENV["HOMEBREW_FAKE_MACOS"]
 
         message = <<~EOS
           Your Xcode (#{MacOS::Xcode.version}) is outdated.
@@ -161,7 +165,7 @@ module Homebrew
         # `brew test-bot` runs `brew doctor` in the CI for the Homebrew/brew
         # repository. This only needs to support whatever CI providers
         # Homebrew/brew is currently using.
-        return if ENV["GITHUB_ACTIONS"]
+        return if GitHub::Actions.env_set?
 
         <<~EOS
           A newer Command Line Tools release is available.
@@ -176,7 +180,7 @@ module Homebrew
         xcode += " => #{MacOS::Xcode.prefix}" unless MacOS::Xcode.default_prefix?
 
         <<~EOS
-          Your Xcode (#{xcode}) is too outdated.
+          Your Xcode (#{xcode}) at #{MacOS::Xcode.bundle_path} is too outdated.
           Please update to Xcode #{MacOS::Xcode.latest_version} (or delete it).
           #{MacOS::Xcode.update_instructions}
         EOS
@@ -197,18 +201,6 @@ module Homebrew
         <<~EOS
           Xcode alone is not sufficient on #{MacOS.version.pretty_name}.
           #{DevelopmentTools.installation_instructions}
-        EOS
-      end
-
-      def check_ruby_version
-        return if RUBY_VERSION == HOMEBREW_REQUIRED_RUBY_VERSION
-        return if Homebrew::EnvConfig.developer? && OS::Mac.version.prerelease?
-
-        <<~EOS
-          Ruby version #{RUBY_VERSION} is unsupported on #{MacOS.version}. Homebrew
-          is developed and tested on Ruby #{HOMEBREW_REQUIRED_RUBY_VERSION}, and may not work correctly
-          on other Rubies. Patches are accepted as long as they don't cause breakage
-          on supported Rubies.
         EOS
       end
 
@@ -258,17 +250,6 @@ module Homebrew
           You have not agreed to the Xcode license.
           Agree to the license by opening Xcode.app or running:
             sudo xcodebuild -license
-        EOS
-      end
-
-      def check_xquartz_up_to_date
-        return unless MacOS::XQuartz.outdated?
-
-        <<~EOS
-          Your XQuartz (#{MacOS::XQuartz.version}) is outdated.
-          Please install XQuartz #{MacOS::XQuartz.latest_version} (or delete the current version).
-          XQuartz can be updated using Homebrew Cask by running:
-            brew reinstall xquartz
         EOS
       end
 
@@ -350,7 +331,7 @@ module Homebrew
           nil
         end
         if libiconv&.linked_keg&.directory?
-          unless libiconv.keg_only?
+          unless libiconv&.keg_only?
             <<~EOS
               A libiconv formula is installed and linked.
               This will break stuff. For serious. Unlink it.
@@ -359,7 +340,7 @@ module Homebrew
         else
           inject_file_list @found, <<~EOS
             libiconv files detected at a system prefix other than /usr.
-            Homebrew doesn't provide a libiconv formula, and expects to link against
+            Homebrew doesn't provide a libiconv formula and expects to link against
             the system version in /usr. libiconv in other prefixes can cause
             compile or link failure, especially if compiled with improper
             architectures. macOS itself never installs anything to /usr/local so
@@ -368,19 +349,6 @@ module Homebrew
             tl;dr: delete these files:
           EOS
         end
-      end
-
-      def check_for_bitdefender
-        if !Pathname("/Library/Bitdefender/AVP/EndpointSecurityforMac.app").exist? &&
-           !Pathname("/Library/Bitdefender/AVP/BDLDaemon").exist?
-          return
-        end
-
-        <<~EOS
-          You have installed Bitdefender. The "Traffic Scan" option interferes with
-          Homebrew's ability to download packages. See:
-            #{Formatter.url("https://github.com/Homebrew/brew/issues/5558")}
-        EOS
       end
 
       def check_for_multiple_volumes
@@ -398,7 +366,7 @@ module Homebrew
             real_tmp = tmp.realpath.parent
             where_tmp = volumes.which real_tmp
           ensure
-            Dir.delete tmp
+            Dir.delete tmp.to_s
           end
         rescue
           return
@@ -465,7 +433,7 @@ module Homebrew
           path_version = sdk.path.basename.to_s[MacOS::SDK::VERSIONED_SDK_REGEX, 1]
           next true if path_version.blank?
 
-          sdk.version == MacOS::Version.new(path_version).strip_patch
+          sdk.version == MacOSVersion.new(path_version).strip_patch
         end
 
         if locator.source == :clt

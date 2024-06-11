@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking gzip archives.
   class Gzip
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -27,7 +23,7 @@ module UnpackStrategy
       quiet_flags = verbose ? [] : ["-q"]
       system_command! "gunzip",
                       args:    [*quiet_flags, "-N", "--", unpack_dir/basename],
-                      verbose: verbose
+                      verbose:
     end
   end
 end

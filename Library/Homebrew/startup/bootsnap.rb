@@ -1,17 +1,11 @@
-# typed: false
+# typed: strict
 # frozen_string_literal: true
 
-homebrew_bootsnap_enabled = !ENV["HOMEBREW_NO_BOOTSNAP"] && ENV["HOMEBREW_BOOTSNAP"]
+homebrew_bootsnap_enabled = ENV["HOMEBREW_NO_BOOTSNAP"].nil? && !ENV["HOMEBREW_BOOTSNAP"].nil?
 
-# portable ruby doesn't play nice with bootsnap
-# Can't use .exclude? here because we haven't required active_support yet.
-homebrew_bootsnap_enabled &&= !ENV["HOMEBREW_RUBY_PATH"].to_s.include?("/vendor/portable-ruby/") # rubocop:disable Rails/NegateInclude
-
+# we need some development tools to build bootsnap native code
 homebrew_bootsnap_enabled &&= if ENV["HOMEBREW_MACOS_VERSION"]
-  # Apple Silicon doesn't play nice with bootsnap
-  ENV["HOMEBREW_PROCESSOR"] == "Intel" &&
-    # we need some development tools to build bootsnap native code
-    (File.directory?("/Applications/Xcode.app") || File.directory?("/Library/Developer/CommandLineTools"))
+  File.directory?("/Applications/Xcode.app") || File.directory?("/Library/Developer/CommandLineTools")
 else
   File.executable?("/usr/bin/clang") || File.executable?("/usr/bin/gcc")
 end
@@ -20,23 +14,31 @@ if homebrew_bootsnap_enabled
   begin
     require "bootsnap"
   rescue LoadError
-    unless ENV["HOMEBREW_BOOTSNAP_RETRY"]
-      Homebrew.install_bundler_gems!(only_warn_on_failure: true)
+    raise if ENV["HOMEBREW_BOOTSNAP_RETRY"]
 
-      ENV["HOMEBREW_BOOTSNAP_RETRY"] = "1"
-      exec ENV["HOMEBREW_BREW_FILE"], *ARGV
-    end
+    Homebrew.install_bundler_gems!(groups: ["bootsnap"], only_warn_on_failure: true)
+
+    ENV["HOMEBREW_BOOTSNAP_RETRY"] = "1"
+    exec ENV.fetch("HOMEBREW_BREW_FILE"), *ARGV
   end
 
   ENV.delete("HOMEBREW_BOOTSNAP_RETRY")
 
   if defined?(Bootsnap)
-    cache = ENV["HOMEBREW_CACHE"] || ENV["HOMEBREW_DEFAULT_CACHE"]
-    # Can't use .blank? here because we haven't required active_support yet.
-    raise "Needs HOMEBREW_CACHE or HOMEBREW_DEFAULT_CACHE!" if cache.nil? || cache.empty? # rubocop:disable Rails/Blank
+    cache = ENV.fetch("HOMEBREW_CACHE", nil) || ENV.fetch("HOMEBREW_DEFAULT_CACHE", nil)
+    raise "Needs HOMEBREW_CACHE or HOMEBREW_DEFAULT_CACHE!" if cache.nil? || cache.empty?
+
+    # We never do `require "vendor/bundle/ruby/..."` or `require "vendor/portable-ruby/..."`,
+    # so let's slim the cache a bit by excluding them.
+    # Note that gems within `bundle/ruby` will still be cached - these are when directory walking down from above.
+    ignore_directories = [
+      (HOMEBREW_LIBRARY_PATH/"vendor/bundle/ruby").to_s,
+      (HOMEBREW_LIBRARY_PATH/"vendor/portable-ruby").to_s,
+    ]
 
     Bootsnap.setup(
       cache_dir:          cache,
+      ignore_directories:,
       load_path_cache:    true,
       compile_cache_iseq: true,
       compile_cache_yaml: true,

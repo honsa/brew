@@ -7,11 +7,7 @@ require "etc"
 require "system_command"
 
 # A system user.
-#
-# @api private
 class User < SimpleDelegator
-  extend T::Sig
-
   include SystemCommand::Mixin
 
   # Return whether the user has an active GUI session.

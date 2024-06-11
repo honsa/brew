@@ -1,4 +1,4 @@
-# typed: true
+# typed: strict
 # frozen_string_literal: true
 
 module Homebrew
@@ -29,16 +29,14 @@ module Homebrew
       #
       # @api public
       class Gnu
-        extend T::Sig
-
         NICE_NAME = "GNU"
 
         # The `Regexp` used to determine if the strategy applies to the URL.
-        URL_MATCH_REGEX = %r{
+        URL_MATCH_REGEX = T.let(%r{
           ^https?://
           (?:(?:[^/]+?\.)*gnu\.org/(?:gnu|software)/(?<project_name>[^/]+)/
           |(?<project_name>[^/]+)\.gnu\.org/?$)
-        }ix.freeze
+        }ix, Regexp)
 
         # Whether the strategy can be applied to the provided URL.
         #
@@ -64,7 +62,7 @@ module Homebrew
           return values if match.blank?
 
           # The directory listing page for the project's files
-          values[:url] = "http://ftp.gnu.org/gnu/#{match[:project_name]}/"
+          values[:url] = "https://ftp.gnu.org/gnu/#{match[:project_name]}/"
 
           regex_name = Regexp.escape(T.must(match[:project_name])).gsub("\\-", "-")
 
@@ -91,16 +89,14 @@ module Homebrew
           params(
             url:    String,
             regex:  T.nilable(Regexp),
-            unused: T.nilable(T::Hash[Symbol, T.untyped]),
-            block:  T.nilable(
-              T.proc.params(arg0: String, arg1: Regexp).returns(T.any(String, T::Array[String], NilClass)),
-            ),
+            unused: T.untyped,
+            block:  T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
         def self.find_versions(url:, regex: nil, **unused, &block)
           generated = generate_input_values(url)
 
-          T.unsafe(PageMatch).find_versions(url: generated[:url], regex: regex || generated[:regex], **unused, &block)
+          PageMatch.find_versions(url: generated[:url], regex: regex || generated[:regex], **unused, &block)
         end
       end
     end

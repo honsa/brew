@@ -19,15 +19,31 @@ fi
 # HOMEBREW_PREFIX is set by extend/ENV/super.rb
 # shellcheck disable=SC2154
 SHFMT="${HOMEBREW_PREFIX}/opt/shfmt/bin/shfmt"
-
 if [[ ! -x "${SHFMT}" ]]
 then
   odie "${0##*/}: Please install shfmt by running \`brew install shfmt\`."
 fi
 
-if [[ ! -x "$(command -v diff)" ]]
+# HOMEBREW_PREFIX is set by extend/ENV/super.rb
+# shellcheck disable=SC2154
+DIFF="${HOMEBREW_PREFIX}/opt/diffutils/bin/diff"
+DIFF_ARGS=("-d" "-C" "1")
+if [[ ! -x "${DIFF}" ]]
 then
-  odie "${0##*/}: Please install diff by running \`brew install diffutils\`."
+  # HOMEBREW_PATH is set by global.rb
+  # shellcheck disable=SC2154
+  if [[ -x "$(PATH="${HOMEBREW_PATH}" command -v diff)" ]]
+  then
+    DIFF="$(PATH="${HOMEBREW_PATH}" command -v diff)" # fall back to `diff` in PATH without coloring
+  elif [[ -z "${HOMEBREW_PATH}" && -x "$(command -v diff)" ]]
+  then
+    # HOMEBREW_PATH may unset if shfmt.sh is called by vscode
+    DIFF="$(command -v diff)" # fall back to `diff` in PATH without coloring
+  else
+    odie "${0##*/}: Please install diff by running \`brew install diffutils\`."
+  fi
+else
+  DIFF_ARGS+=("--color") # enable color output for GNU diff
 fi
 
 SHFMT_ARGS=()
@@ -40,7 +56,7 @@ do
     shift
     break
   fi
-  if [[ "${arg}" == "-w" ]]
+  if [[ "${arg}" == "-w" || "${arg}" == "--write" ]]
   then
     shift
     INPLACE=1
@@ -69,9 +85,11 @@ do
 done
 unset file
 
+STDIN=''
 if [[ "${#FILES[@]}" == 0 ]]
 then
-  exit
+  FILES=(/dev/stdin)
+  STDIN=1
 fi
 
 ###
@@ -79,7 +97,7 @@ fi
 ###
 
 # Check for specific patterns and prompt messages if detected
-no_forbidden_patten() {
+no_forbidden_pattern() {
   local file="$1"
   local tempfile="$2"
   local subject="$3"
@@ -113,7 +131,7 @@ no_tabs() {
   local file="$1"
   local tempfile="$2"
 
-  no_forbidden_patten "${file}" "${tempfile}" \
+  no_forbidden_pattern "${file}" "${tempfile}" \
     "Indent with tab" \
     'Replace tabs with 2 spaces instead.' \
     '^[[:space:]]+' \
@@ -149,7 +167,7 @@ Use the followings instead (keep for statements only one line):
 EOMSG
   )"
 
-  no_forbidden_patten "${file}" "${tempfile}" \
+  no_forbidden_pattern "${file}" "${tempfile}" \
     "Multiline for statement" \
     "${message}" \
     "${regex}"
@@ -179,7 +197,7 @@ Use the followings instead:
 EOMSG
   )"
 
-  no_forbidden_patten "${file}" "${tempfile}" \
+  no_forbidden_pattern "${file}" "${tempfile}" \
     "Pattern \`IFS=\$'\\n'\`" \
     "${message}" \
     "${regex}"
@@ -209,21 +227,21 @@ no_forbidden_styles() {
 align_multiline_if_condition() {
   local line
   local lastline=''
-  local base_indent=''  # indents before `if`
-  local extra_indent='' # 2 extra spaces for `elif`
-  local multiline_if_begin_regex='^( *)(el)?if '
-  local multiline_then_end_regex='^(.*)\; (then( *#.*)?)$'
-  local within_test_regex='^( *)(((! )?-[fdLrwxeszn] )|([^\[]+ == ))'
+  local base_indent=''       # indents before `if`
+  local elif_extra_indent='' # 2 extra spaces for `elif`
+  local multiline_if_then_begin_regex='^( *)(el)?if '
+  local multiline_if_then_end_regex='^(.*)\; (then( *#.*)?)$'
+  local within_test_regex='^( *)(((! )?-[fdLrwxeszn] )|([^\[]+ (==|!=|=~) ))'
 
   trim() {
     [[ "$1" =~ [^[:space:]](.*[^[:space:]])? ]]
     printf "%s" "${BASH_REMATCH[0]}"
   }
 
-  if [[ "$1" =~ ${multiline_if_begin_regex} ]]
+  if [[ "$1" =~ ${multiline_if_then_begin_regex} ]]
   then
     base_indent="${BASH_REMATCH[1]}"
-    [[ -n "${BASH_REMATCH[2]}" ]] && extra_indent='  '
+    [[ -n "${BASH_REMATCH[2]}" ]] && elif_extra_indent='  ' # 2 extra spaces for `elif`
     echo "$1"
     shift
   fi
@@ -232,16 +250,21 @@ align_multiline_if_condition() {
   do
     line="$1"
     shift
-    if [[ "${line}" =~ ${multiline_then_end_regex} ]]
+    if [[ "${line}" =~ ${multiline_if_then_end_regex} ]]
     then
       line="${BASH_REMATCH[1]}"
       lastline="${base_indent}${BASH_REMATCH[2]}"
     fi
     if [[ "${line}" =~ ${within_test_regex} ]]
     then
-      echo "${base_indent}${extra_indent}      $(trim "${line}")"
+      # Add 3 extra spaces (6 spaces in total) to multiline test conditions
+      # before:                   after:
+      #   if [[ -n ... ||           if [[ -n ... ||
+      #     -n ... ]]                     -n ... ]]
+      #   then                      then
+      echo "${base_indent}${elif_extra_indent}      $(trim "${line}")"
     else
-      echo "${base_indent}${extra_indent}   $(trim "${line}")"
+      echo "${base_indent}${elif_extra_indent}   $(trim "${line}")"
     fi
   done
 
@@ -269,24 +292,28 @@ wrap_then_do() {
   local -a processed=()
   local -a buffer=()
   local line
-  local singleline_then_regex='^( *)(el)?if (.+)\; (then( *#.*)?)$'
-  local singleline_do_regex='^( *)(for|while) (.+)\; (do( *#.*)?)$'
-  local multiline_if_begin_regex='^( *)(el)?if '
-  local multiline_then_end_regex='^(.*)\; (then( *#.*)?)$'
+  local singleline_if_then_fi_regex='^( *)if (.+)\; then (.+)\; fi( *#.*)?$'
+  local singleline_if_then_regex='^( *)(el)?if (.+)\; (then( *#.*)?)$'
+  local singleline_for_do_regex='^( *)(for|while) (.+)\; (do( *#.*)?)$'
+  local multiline_if_then_begin_regex='^( *)(el)?if '
+  local multiline_if_then_end_regex='^(.*)\; (then( *#.*)?)$'
 
   while IFS='' read -r line
   do
     if [[ "${#buffer[@]}" == 0 ]]
     then
-      if [[ "${line}" =~ ${singleline_then_regex} ]]
+      if [[ "${line}" =~ ${singleline_if_then_fi_regex} ]]
+      then
+        processed+=("${line}")
+      elif [[ "${line}" =~ ${singleline_if_then_regex} ]]
       then
         processed+=("${BASH_REMATCH[1]}${BASH_REMATCH[2]}if ${BASH_REMATCH[3]}")
         processed+=("${BASH_REMATCH[1]}${BASH_REMATCH[4]}")
-      elif [[ "${line}" =~ ${singleline_do_regex} ]]
+      elif [[ "${line}" =~ ${singleline_for_do_regex} ]]
       then
         processed+=("${BASH_REMATCH[1]}${BASH_REMATCH[2]} ${BASH_REMATCH[3]}")
         processed+=("${BASH_REMATCH[1]}${BASH_REMATCH[4]}")
-      elif [[ "${line}" =~ ${multiline_if_begin_regex} ]]
+      elif [[ "${line}" =~ ${multiline_if_then_begin_regex} ]]
       then
         buffer=("${line}")
       else
@@ -294,7 +321,7 @@ wrap_then_do() {
       fi
     else
       buffer+=("${line}")
-      if [[ "${line}" =~ ${multiline_then_end_regex} ]]
+      if [[ "${line}" =~ ${multiline_if_then_end_regex} ]]
       then
         while IFS='' read -r line
         do
@@ -313,48 +340,77 @@ align_multiline_switch_cases() {
   true
 }
 
+# Return codes:
+#   0: success, good styles
+#   1: file system permission errors
+#   2: shfmt failed
+#   3: forbidden styles detected
+#   4: bad styles but can be auto-fixed
 format() {
   local file="$1"
   local tempfile
-  if [[ ! -f "${file}" || ! -r "${file}" ]]
-  then
-    onoe "File \"${file}\" is not readable."
-    return 1
-  fi
 
-  tempfile="$(dirname "${file}")/.${file##*/}.temp"
+  if [[ -n "${STDIN}" ]]
+  then
+    tempfile="$(mktemp)"
+  else
+    if [[ ! -f "${file}" || ! -r "${file}" ]]
+    then
+      onoe "File \"${file}\" is not readable."
+      return 1
+    fi
+
+    tempfile="$(dirname "${file}")/.${file##*/}.formatted~"
+    cp -af "${file}" "${tempfile}"
+  fi
   trap 'rm -f "${tempfile}" 2>/dev/null' RETURN
-  cp -af "${file}" "${tempfile}"
-
-  if [[ ! -f "${tempfile}" || ! -w "${tempfile}" ]]
-  then
-    onoe "File \"${tempfile}\" is not writable."
-    return 1
-  fi
 
   # Format with `shfmt` first
-  if ! "${SHFMT}" -w "${SHFMT_ARGS[@]}" "${tempfile}"
+  if [[ -z "${STDIN}" ]]
   then
-    onoe "Failed to run \`shfmt\` for file \"${file}\"."
-    return 1
+    if [[ ! -f "${tempfile}" || ! -w "${tempfile}" ]]
+    then
+      onoe "File \"${tempfile}\" is not writable."
+      return 1
+    fi
+    if ! "${SHFMT}" -w "${SHFMT_ARGS[@]}" "${tempfile}"
+    then
+      onoe "Failed to run \`shfmt\` for file \"${file}\"."
+      return 2
+    fi
+  else
+    if ! "${SHFMT}" "${SHFMT_ARGS[@]}" >"${tempfile}"
+    then
+      onoe "Failed to run \`shfmt\` for file \"${file}\"."
+      return 2
+    fi
   fi
 
   # Fail fast when forbidden styles detected
-  ! no_forbidden_styles "${file}" "${tempfile}" && return 2
+  no_forbidden_styles "${file}" "${tempfile}" || return 3
 
   # Tweak it with custom shell script styles
   wrap_then_do "${file}" "${tempfile}"
   align_multiline_switch_cases "${file}" "${tempfile}"
 
-  if ! diff -q "${file}" "${tempfile}" &>/dev/null
+  if [[ -n "${STDIN}" ]]
   then
-    # Show differences
-    diff -d -C 1 --color=auto "${file}" "${tempfile}"
+    cat "${tempfile}"
+    return 0
+  fi
+
+  if ! "${DIFF}" -q "${file}" "${tempfile}" &>/dev/null
+  then
     if [[ -n "${INPLACE}" ]]
     then
       cp -af "${tempfile}" "${file}"
+    else
+      # Show a linebreak between outputs
+      [[ "${RETCODE}" != 0 ]] && onoe
+      # Show differences
+      "${DIFF}" "${DIFF_ARGS[@]}" "${file}" "${tempfile}" 1>&2
     fi
-    return 2
+    return 4
   else
     # File is identical between code formations (good styling)
     return 0
@@ -364,17 +420,31 @@ format() {
 RETCODE=0
 for file in "${FILES[@]}"
 do
-  format "${file}"
-  retcode="$?"
+  retcode=''
+  if [[ -n "${INPLACE}" ]]
+  then
+    INPLACE=1 format "${file}"
+    retcode="$?"
+    if [[ "${retcode}" == 4 ]]
+    then
+      onoe "${0##*/}: Bad styles detected in file \"${file}\", fixing..."
+      retcode=''
+    fi
+  fi
+  if [[ -z "${retcode}" ]]
+  then
+    INPLACE='' format "${file}"
+    retcode="$?"
+  fi
   if [[ "${retcode}" != 0 ]]
   then
-    if [[ "${retcode}" == 1 ]]
-    then
-      onoe "${0##*/}: Failed to format file \"${file}\". Formatter exited with code 1."
-    else
-      onoe "${0##*/}: Bad style for file \"${file}\". Formatter exited with code 2."
-    fi
-    onoe
+    case "${retcode}" in
+      1) onoe "${0##*/}: Failed to format file \"${file}\". Formatter exited with code 1 (permission error)." ;;
+      2) onoe "${0##*/}: Failed to format file \"${file}\". Formatter exited with code 2 (\`shfmt\` failed)." ;;
+      3) onoe "${0##*/}: Failed to format file \"${file}\". Formatter exited with code 3 (forbidden styles detected)." ;;
+      4) onoe "${0##*/}: Fixable bad styles detected in file \"${file}\", run \`brew style --fix\` to apply. Formatter exited with code 4." ;;
+      *) onoe "${0##*/}: Failed to format file \"${file}\". Formatter exited with code ${retcode}." ;;
+    esac
     RETCODE=1
   fi
 done

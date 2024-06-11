@@ -1,9 +1,9 @@
-# typed: false
 # frozen_string_literal: true
 
+require "cmd/list"
 require "cmd/shared_examples/args_parse"
 
-describe "brew list" do
+RSpec.describe Homebrew::Cmd::List do
   let(:formulae) { %w[bar foo qux] }
 
   it_behaves_like "parseable arguments"

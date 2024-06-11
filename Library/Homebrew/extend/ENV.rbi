@@ -1,5 +1,6 @@
 # typed: strict
 
+# @!visibility private
 module EnvMethods
   include Kernel
 
@@ -36,8 +37,10 @@ end
 
 module EnvActivation
   include EnvMethods
+  include Superenv
 end
 
+# @!visibility private
 class Sorbet
   module Private
     module Static

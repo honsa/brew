@@ -6,8 +6,6 @@ require "tsort"
 module Utils
   # Topologically sortable hash map.
   class TopologicalHash < Hash
-    extend T::Sig
-
     include TSort
 
     sig {
@@ -20,7 +18,7 @@ module Utils
       packages = Array(packages)
 
       packages.each do |cask_or_formula|
-        next accumulator if accumulator.key?(cask_or_formula)
+        next if accumulator.key?(cask_or_formula)
 
         if cask_or_formula.is_a?(Cask::Cask)
           formula_deps = cask_or_formula.depends_on
@@ -32,16 +30,14 @@ module Utils
         else
           formula_deps = cask_or_formula.deps
                                         .reject(&:build?)
+                                        .reject(&:test?)
                                         .map(&:to_formula)
           cask_deps = cask_or_formula.requirements
-                                     .map(&:cask)
-                                     .compact
+                                     .filter_map(&:cask)
                                      .map { |c| Cask::CaskLoader.load(c, config: nil) }
         end
 
-        accumulator[cask_or_formula] ||= []
-        accumulator[cask_or_formula] += formula_deps
-        accumulator[cask_or_formula] += cask_deps
+        accumulator[cask_or_formula] = formula_deps + cask_deps
 
         graph_package_dependencies(formula_deps, accumulator)
         graph_package_dependencies(cask_deps, accumulator)

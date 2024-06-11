@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking pax archives.
   class Pax
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -26,7 +22,7 @@ module UnpackStrategy
       system_command! "pax",
                       args:    ["-rf", path],
                       chdir:   unpack_dir,
-                      verbose: verbose
+                      verbose:
     end
   end
 end

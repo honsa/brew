@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking RAR archives.
   class Rar
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -20,17 +16,17 @@ module UnpackStrategy
     end
 
     def dependencies
-      @dependencies ||= [Formula["unrar"]]
+      @dependencies ||= [Formula["libarchive"]]
     end
 
     private
 
     sig { override.params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).returns(T.untyped) }
     def extract_to_dir(unpack_dir, basename:, verbose:)
-      system_command! "unrar",
-                      args:    ["x", "-inul", path, unpack_dir],
-                      env:     { "PATH" => PATH.new(Formula["unrar"].opt_bin, ENV["PATH"]) },
-                      verbose: verbose
+      system_command! "bsdtar",
+                      args:    ["x", "-f", path, "-C", unpack_dir],
+                      env:     { "PATH" => PATH.new(Formula["libarchive"].opt_bin, ENV.fetch("PATH")) },
+                      verbose:
     end
   end
 end

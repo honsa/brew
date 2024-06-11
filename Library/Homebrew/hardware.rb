@@ -9,31 +9,31 @@ module Hardware
   class CPU
     INTEL_32BIT_ARCHS = [:i386].freeze
     INTEL_64BIT_ARCHS = [:x86_64].freeze
+    INTEL_ARCHS       = (INTEL_32BIT_ARCHS + INTEL_64BIT_ARCHS).freeze
     PPC_32BIT_ARCHS   = [:ppc, :ppc32, :ppc7400, :ppc7450, :ppc970].freeze
     PPC_64BIT_ARCHS   = [:ppc64, :ppc64le, :ppc970].freeze
-    ARM_64BIT_ARCHS   = [:arm64].freeze
+    PPC_ARCHS         = (PPC_32BIT_ARCHS + PPC_64BIT_ARCHS).freeze
+    ARM_64BIT_ARCHS   = [:arm64, :aarch64].freeze
+    ARM_ARCHS         = ARM_64BIT_ARCHS
     ALL_ARCHS = [
-      *INTEL_32BIT_ARCHS,
-      *INTEL_64BIT_ARCHS,
-      *PPC_32BIT_ARCHS,
-      *PPC_64BIT_ARCHS,
-      *ARM_64BIT_ARCHS,
+      *INTEL_ARCHS,
+      *PPC_ARCHS,
+      *ARM_ARCHS,
     ].freeze
 
     INTEL_64BIT_OLDEST_CPU = :core2
 
     class << self
-      extend T::Sig
-
       def optimization_flags
         @optimization_flags ||= {
           native:             arch_flag("native"),
           ivybridge:          "-march=ivybridge",
           sandybridge:        "-march=sandybridge",
+          westmere:           "-march=westmere",
           nehalem:            "-march=nehalem",
           core2:              "-march=core2",
           core:               "-march=prescott",
-          arm_vortex_tempest: "",
+          arm_vortex_tempest: "", # TODO: -mcpu=apple-m1 when we've patched all our GCCs to support it
           armv6:              "-march=armv6",
           armv8:              "-march=armv8-a",
           ppc64:              "-mcpu=powerpc64",
@@ -144,6 +144,10 @@ module Hardware
         ppc? && is_64_bit? && big_endian?
       end
 
+      # Check whether the CPU architecture is ARM.
+      #
+      # @api internal
+      sig { returns(T::Boolean) }
       def arm?
         type == :arm
       end
@@ -154,6 +158,10 @@ module Hardware
 
       def big_endian?
         [1].pack("I") == [1].pack("N")
+      end
+
+      def virtualized?
+        false
       end
 
       def features
@@ -215,6 +223,24 @@ module Hardware
       end
     end
     alias generic_oldest_cpu oldest_cpu
+
+    # Returns a Rust flag to set the target CPU if necessary.
+    # Defaults to nil.
+    sig { returns(T.nilable(String)) }
+    def rustflags_target_cpu
+      # Rust already defaults to the oldest supported cpu for each target-triplet
+      # so it's safe to ignore generic archs such as :armv6 here.
+      # Rust defaults to apple-m1 since Rust 1.71 for aarch64-apple-darwin.
+      @target_cpu ||= case (cpu = oldest_cpu)
+      when :core
+        :prescott
+      when :native, :ivybridge, :sandybridge, :westmere, :nehalem, :core2
+        cpu
+      end
+      return if @target_cpu.blank?
+
+      "--codegen target-cpu=#{@target_cpu}"
+    end
   end
 end
 

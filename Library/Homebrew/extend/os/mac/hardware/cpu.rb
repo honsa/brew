@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "macho"
@@ -83,10 +83,14 @@ module Hardware
         sysctl_bool("hw.optional.sse4_2")
       end
 
-      # NOTE: this is more reliable than checking uname.
-      # `sysctl` returns the right answer even when running in Rosetta 2.
+      # NOTE: This is more reliable than checking `uname`. `sysctl` returns
+      #       the right answer even when running in Rosetta 2.
       def physical_cpu_arm64?
         sysctl_bool("hw.optional.arm64")
+      end
+
+      def virtualized?
+        sysctl_bool("kern.hv_vmm_present")
       end
 
       private
@@ -107,12 +111,22 @@ module Hardware
           :arm_lightning_thunder
         when 0x573b5eec, 0x1b588bb3 # ARMv8.4-A (Firestorm, Icestorm)
           :arm_firestorm_icestorm
+        when 0xda33d83d             # ARMv8.5-A (Blizzard, Avalanche)
+          :arm_blizzard_avalanche
+        when 0xfa33415e             # ARMv8.6-A (M3, Ibiza)
+          :arm_ibiza
+        when 0x5f4dea93             # ARMv8.6-A (M3 Pro, Lobos)
+          :arm_lobos
+        when 0x72015832             # ARMv8.6-A (M3 Max, Palma)
+          :arm_palma
         else
+          # When adding new ARM CPU families, please also update
+          # test/hardware/cpu_spec.rb to include the new families.
           :dunno
         end
       end
 
-      def intel_family
+      def intel_family(_family = nil, _cpu_model = nil)
         case sysctl_int("hw.cpufamily")
         when 0x73d67300 # Yonah: Core Solo/Duo
           :core
@@ -138,6 +152,8 @@ module Hardware
           :kabylake
         when 0x38435547 # Ice Lake
           :icelake
+        when 0x1cf8a03e # Comet Lake
+          :cometlake
         else
           :dunno
         end
@@ -148,7 +164,7 @@ module Hardware
       end
 
       def sysctl_int(key)
-        sysctl_n(key).to_i
+        sysctl_n(key).to_i & 0xffffffff
       end
 
       def sysctl_n(*keys)

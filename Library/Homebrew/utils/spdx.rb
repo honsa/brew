@@ -5,12 +5,7 @@ require "utils/curl"
 require "utils/github"
 
 # Helper module for updating SPDX license data.
-#
-# @api private
 module SPDX
-  include Utils::Curl
-  extend Utils::Curl
-
   module_function
 
   DATA_PATH = (HOMEBREW_DATA_PATH/"spdx").freeze
@@ -34,8 +29,8 @@ module SPDX
 
   def download_latest_license_data!(to: DATA_PATH)
     data_url = "https://raw.githubusercontent.com/spdx/license-list-data/#{latest_tag}/json/"
-    curl_download("#{data_url}licenses.json", to: to/"spdx_licenses.json", try_partial: false)
-    curl_download("#{data_url}exceptions.json", to: to/"spdx_exceptions.json", try_partial: false)
+    Utils::Curl.curl_download("#{data_url}licenses.json", to: to/"spdx_licenses.json")
+    Utils::Curl.curl_download("#{data_url}exceptions.json", to: to/"spdx_exceptions.json")
   end
 
   def parse_license_expression(license_expression)
@@ -47,14 +42,14 @@ module SPDX
       licenses.push license_expression
     when Hash, Array
       if license_expression.is_a? Hash
-        license_expression = license_expression.map do |key, value|
+        license_expression = license_expression.filter_map do |key, value|
           if key.is_a? String
             licenses.push key
             exceptions.push value[:with]
             next
           end
           value
-        end.compact
+        end
       end
 
       license_expression.each do |license|
@@ -95,7 +90,7 @@ module SPDX
     when String
       license_expression
     when Symbol
-      license_expression.to_s.tr("_", " ").titleize
+      license_expression.to_s.tr("_", " ").gsub(/\b(?<!\w['’`()])[a-z]/, &:capitalize)
     when Hash
       expressions = []
 
@@ -105,7 +100,7 @@ module SPDX
           expressions.push "#{hash_type} with #{license_expression[hash_type][:with]}"
         else
           expressions += license_expression[hash_type].map do |license|
-            license_expression_to_string license, bracket: true, hash_type: hash_type
+            license_expression_to_string license, bracket: true, hash_type:
           end
         end
       else
@@ -125,6 +120,40 @@ module SPDX
         "(#{expressions.join operator})"
       else
         expressions.join operator
+      end
+    end
+  end
+
+  def string_to_license_expression(string)
+    return if string.blank?
+
+    result = string
+    result_type = nil
+
+    and_parts = string.split(/ and (?![^(]*\))/)
+    if and_parts.length > 1
+      result = and_parts
+      result_type = :all_of
+    else
+      or_parts = string.split(/ or (?![^(]*\))/)
+      if or_parts.length > 1
+        result = or_parts
+        result_type = :any_of
+      end
+    end
+
+    if result_type
+      result.map! do |part|
+        part = part[1..-2] if part[0] == "(" && part[-1] == ")"
+        string_to_license_expression(part)
+      end
+      { result_type => result }
+    else
+      with_parts = string.split(" with ", 2)
+      if with_parts.length > 1
+        { with_parts.first => { with: with_parts.second } }
+      else
+        result
       end
     end
   end
@@ -165,9 +194,9 @@ module SPDX
 
     name, version, = license_version_info license
 
-    forbidden_licenses.each do |_, license_info|
+    forbidden_licenses.each_value do |license_info|
       forbidden_name, forbidden_version, forbidden_or_later = *license_info
-      next unless forbidden_name == name
+      next if forbidden_name != name
 
       return true if forbidden_or_later && forbidden_version <= version
 

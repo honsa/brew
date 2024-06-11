@@ -4,11 +4,7 @@
 module UnpackStrategy
   # Strategy for unpacking bzip2 archives.
   class Bzip2
-    extend T::Sig
-
     include UnpackStrategy
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -27,7 +23,7 @@ module UnpackStrategy
       quiet_flags = verbose ? [] : ["-q"]
       system_command! "bunzip2",
                       args:    [*quiet_flags, unpack_dir/basename],
-                      verbose: verbose
+                      verbose:
     end
   end
 end

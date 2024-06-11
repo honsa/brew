@@ -11,8 +11,6 @@ require "development_tools"
 # @see Stdenv
 # @see https://www.rubydoc.info/stdlib/Env Ruby's ENV API
 module SharedEnvExtension
-  extend T::Sig
-
   include CompilerConstants
 
   CC_FLAG_VARS = %w[CFLAGS CXXFLAGS OBJCFLAGS OBJCXXFLAGS].freeze
@@ -30,6 +28,7 @@ module SharedEnvExtension
     CMAKE_PREFIX_PATH CMAKE_INCLUDE_PATH CMAKE_FRAMEWORK_PATH
     GOBIN GOPATH GOROOT PERL_MB_OPT PERL_MM_OPT
     LIBRARY_PATH LD_LIBRARY_PATH LD_PRELOAD LD_RUN_PATH
+    RUSTFLAGS
   ].freeze
   private_constant :SANITIZED_VARS
 
@@ -40,13 +39,16 @@ module SharedEnvExtension
       build_bottle:    T.nilable(T::Boolean),
       bottle_arch:     T.nilable(String),
       testing_formula: T::Boolean,
+      debug_symbols:   T.nilable(T::Boolean),
     ).void
   }
-  def setup_build_environment(formula: nil, cc: nil, build_bottle: false, bottle_arch: nil, testing_formula: false)
+  def setup_build_environment(formula: nil, cc: nil, build_bottle: false, bottle_arch: nil, testing_formula: false,
+                              debug_symbols: false)
     @formula = formula
     @cc = cc
     @build_bottle = build_bottle
     @bottle_arch = bottle_arch
+    @debug_symbols = debug_symbols
     reset
   end
   private :setup_build_environment
@@ -58,10 +60,10 @@ module SharedEnvExtension
   end
   private :reset
 
-  sig { returns(T::Hash[String, String]) }
+  sig { returns(T::Hash[String, T.nilable(String)]) }
   def remove_cc_etc
     keys = %w[CC CXX OBJC OBJCXX LD CPP CFLAGS CXXFLAGS OBJCFLAGS OBJCXXFLAGS LDFLAGS CPPFLAGS]
-    keys.map { |key| [key, delete(key)] }.to_h
+    keys.to_h { |key| [key, delete(key)] }
   end
 
   sig { params(newflags: String).void }
@@ -269,7 +271,6 @@ module SharedEnvExtension
     set_cpu_flags(flags)
   end
 
-  # @private
   sig { returns(Symbol) }
   def effective_arch
     if @build_bottle && @bottle_arch
@@ -279,21 +280,20 @@ module SharedEnvExtension
     end
   end
 
-  # @private
   sig { params(name: String).returns(Formula) }
   def gcc_version_formula(name)
     version = name[GNU_GCC_REGEXP, 1]
     gcc_version_name = "gcc@#{version}"
 
     gcc = Formulary.factory("gcc")
-    if gcc.version_suffix == version
+    if gcc.respond_to?(:version_suffix) && T.unsafe(gcc).version_suffix == version
       gcc
     else
       Formulary.factory(gcc_version_name)
     end
   end
+  private :gcc_version_formula
 
-  # @private
   sig { params(name: String).void }
   def warn_about_non_apple_gcc(name)
     begin
@@ -311,15 +311,10 @@ module SharedEnvExtension
         brew install #{gcc_formula.full_name}
     EOS
   end
+  private :warn_about_non_apple_gcc
 
   sig { void }
   def permit_arch_flags; end
-
-  # @private
-  sig { params(cc: T.any(Symbol, String)).returns(T::Boolean) }
-  def compiler_any_clang?(cc = compiler)
-    %w[clang llvm_clang].include?(cc.to_s)
-  end
 
   private
 
@@ -346,7 +341,7 @@ module SharedEnvExtension
     COMPILER_SYMBOL_MAP.fetch(value) do |other|
       case other
       when GNU_GCC_REGEXP
-        other
+        other.to_sym
       else
         raise "Invalid value for #{source}: #{other}"
       end

@@ -6,12 +6,8 @@ require "system_command"
 module UnpackStrategy
   # Strategy for unpacking tar archives.
   class Tar
-    extend T::Sig
-
     include UnpackStrategy
     extend SystemCommand::Mixin
-
-    using Magic
 
     sig { returns(T::Array[String]) }
     def self.extensions
@@ -21,7 +17,8 @@ module UnpackStrategy
         ".tgz", ".tar.gz",
         ".tlzma", ".tar.lzma",
         ".txz", ".tar.xz",
-        ".tar.zst"
+        ".tar.zst",
+        ".crate"
       ]
     end
 
@@ -39,7 +36,7 @@ module UnpackStrategy
 
     sig { override.params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).returns(T.untyped) }
     def extract_to_dir(unpack_dir, basename:, verbose:)
-      Dir.mktmpdir do |tmpdir|
+      Dir.mktmpdir("homebrew-tar", HOMEBREW_TEMP) do |tmpdir|
         tar_path = if DependencyCollector.tar_needs_xz_dependency? && Xz.can_extract?(path)
           subextract(Xz, Pathname(tmpdir), verbose)
         elsif Zstd.can_extract?(path)
@@ -52,7 +49,7 @@ module UnpackStrategy
                         args:    ["--extract", "--no-same-owner",
                                   "--file", tar_path,
                                   "--directory", unpack_dir],
-                        verbose: verbose
+                        verbose:
       end
     end
 
@@ -60,7 +57,7 @@ module UnpackStrategy
       params(extractor: T.any(T.class_of(Xz), T.class_of(Zstd)), dir: Pathname, verbose: T::Boolean).returns(Pathname)
     }
     def subextract(extractor, dir, verbose)
-      extractor.new(path).extract(to: dir, verbose: verbose)
+      extractor.new(path).extract(to: dir, verbose:)
       T.must(dir.children.first)
     end
   end

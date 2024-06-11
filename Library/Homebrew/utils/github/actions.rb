@@ -1,15 +1,14 @@
 # typed: true
 # frozen_string_literal: true
 
+require "securerandom"
 require "utils/tty"
 
 module GitHub
   # Helper functions for interacting with GitHub Actions.
   #
-  # @api private
+  # @api internal
   module Actions
-    extend T::Sig
-
     sig { params(string: String).returns(String) }
     def self.escape(string)
       # See https://github.community/t/set-output-truncates-multiline-strings/16852/3.
@@ -18,9 +17,48 @@ module GitHub
             .gsub("\r", "%0D")
     end
 
+    sig { params(name: String, value: String).returns(String) }
+    def self.format_multiline_string(name, value)
+      # Format multiline strings for environment files
+      # See https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
+
+      delimiter = "ghadelimiter_#{SecureRandom.uuid}"
+
+      if name.include?(delimiter) || value.include?(delimiter)
+        raise "`name` and `value` must not contain the delimiter"
+      end
+
+      <<~EOS
+        #{name}<<#{delimiter}
+        #{value}
+        #{delimiter}
+      EOS
+    end
+
+    sig { returns(T::Boolean) }
+    def self.env_set?
+      ENV.fetch("GITHUB_ACTIONS", false).present?
+    end
+
+    sig {
+      params(
+        type: Symbol, message: String,
+        file: T.nilable(T.any(String, Pathname)),
+        line: T.nilable(Integer)
+      ).void
+    }
+    def self.puts_annotation_if_env_set(type, message, file: nil, line: nil)
+      # Don't print annotations during tests, too messy to handle these.
+      return if ENV.fetch("HOMEBREW_TESTS", false)
+      return unless env_set?
+
+      std = (type == :notice) ? $stdout : $stderr
+      std.puts Annotation.new(type, message)
+    end
+
     # Helper class for formatting annotations on GitHub Actions.
     class Annotation
-      extend T::Sig
+      ANNOTATION_TYPES = [:notice, :warning, :error].freeze
 
       sig { params(path: T.any(String, Pathname)).returns(T.nilable(Pathname)) }
       def self.path_relative_to_workspace(path)
@@ -33,32 +71,47 @@ module GitHub
 
       sig {
         params(
-          type: Symbol, message: String,
-          file: T.nilable(T.any(String, Pathname)), line: T.nilable(Integer), column: T.nilable(Integer)
+          type:       Symbol,
+          message:    String,
+          file:       T.nilable(T.any(String, Pathname)),
+          title:      T.nilable(String),
+          line:       T.nilable(Integer),
+          end_line:   T.nilable(Integer),
+          column:     T.nilable(Integer),
+          end_column: T.nilable(Integer),
         ).void
       }
-      def initialize(type, message, file: nil, line: nil, column: nil)
-        raise ArgumentError, "Unsupported type: #{type.inspect}" unless [:warning, :error].include?(type)
+      def initialize(type, message, file: nil, title: nil, line: nil, end_line: nil, column: nil, end_column: nil)
+        raise ArgumentError, "Unsupported type: #{type.inspect}" if ANNOTATION_TYPES.exclude?(type)
 
         @type = type
         @message = Tty.strip_ansi(message)
-        @file = self.class.path_relative_to_workspace(file) if file
+        @file = self.class.path_relative_to_workspace(file) if file.present?
+        @title = Tty.strip_ansi(title) if title
         @line = Integer(line) if line
+        @end_line = Integer(end_line) if end_line
         @column = Integer(column) if column
+        @end_column = Integer(end_column) if end_column
       end
 
       sig { returns(String) }
       def to_s
         metadata = @type.to_s
-
         if @file
           metadata << " file=#{Actions.escape(@file.to_s)}"
 
           if @line
             metadata << ",line=#{@line}"
-            metadata << ",col=#{@column}" if @column
+            metadata << ",endLine=#{@end_line}" if @end_line
+
+            if @column
+              metadata << ",col=#{@column}"
+              metadata << ",endColumn=#{@end_column}" if @end_column
+            end
           end
         end
+
+        metadata << ",title=#{Actions.escape(@title)}" if @title
 
         "::#{metadata}::#{Actions.escape(@message)}"
       end
@@ -67,7 +120,7 @@ module GitHub
       # the `GITHUB_WORKSPACE` directory or if no `file` is specified.
       sig { returns(T::Boolean) }
       def relevant?
-        return true if @file.nil?
+        return true if @file.blank?
 
         @file.descend.next.to_s != ".."
       end

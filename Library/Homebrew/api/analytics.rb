@@ -1,15 +1,11 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 module Homebrew
   module API
     # Helper functions for using the analytics JSON API.
-    #
-    # @api private
     module Analytics
       class << self
-        extend T::Sig
-
         sig { returns(String) }
         def analytics_api_path
           "analytics"
@@ -24,5 +20,3 @@ module Homebrew
     end
   end
 end
-
-require "extend/os/api/analytics"

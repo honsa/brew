@@ -1,13 +1,13 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "shellwords"
 require "utils"
 
 # Raised when a command is used wrong.
+#
+# @api internal
 class UsageError < RuntimeError
-  extend T::Sig
-
   attr_reader :reason
 
   def initialize(reason = nil)
@@ -45,8 +45,13 @@ class KegUnspecifiedError < UsageError
   end
 end
 
+class UnsupportedInstallationMethod < RuntimeError; end
+
 class MultipleVersionsInstalledError < RuntimeError; end
 
+# Raised when a path is not a keg.
+#
+# @api internal
 class NotAKegError < RuntimeError; end
 
 # Raised when a keg doesn't exist.
@@ -73,27 +78,31 @@ end
 class FormulaSpecificationError < StandardError; end
 
 # Raised when a deprecated method is used.
-#
-# @api private
 class MethodDeprecatedError < StandardError
   attr_accessor :issues_url
 end
 
 # Raised when neither a formula nor a cask with the given name is available.
 class FormulaOrCaskUnavailableError < RuntimeError
-  extend T::Sig
-
   attr_reader :name
 
   def initialize(name)
     super()
 
     @name = name
+
+    # Store the state of these envs at the time the exception is thrown.
+    # This is so we do the fuzzy search for "did you mean" etc under that same mode,
+    # in case the list of formulae are different.
+    @without_api = Homebrew::EnvConfig.no_install_from_api?
+    @auto_without_api = Homebrew::EnvConfig.automatically_set_no_install_from_api?
   end
 
   sig { returns(String) }
   def did_you_mean
-    similar_formula_names = Formula.fuzzy_search(name)
+    require "formula"
+
+    similar_formula_names = Homebrew.with_no_api_env_if_needed(@without_api) { Formula.fuzzy_search(name) }
     return "" if similar_formula_names.blank?
 
     "Did you mean #{similar_formula_names.to_sentence two_words_connector: " or ", last_word_connector: " or "}?"
@@ -101,14 +110,16 @@ class FormulaOrCaskUnavailableError < RuntimeError
 
   sig { returns(String) }
   def to_s
-    "No available formula or cask with the name \"#{name}\". #{did_you_mean}".strip
+    s = "No available formula or cask with the name \"#{name}\". #{did_you_mean}".strip
+    if @auto_without_api && !CoreTap.instance.installed?
+      s += "\nA full git tap clone is required to use this command on core packages."
+    end
+    s
   end
 end
 
 # Raised when a formula or cask in a specific tap is not available.
 class TapFormulaOrCaskUnavailableError < FormulaOrCaskUnavailableError
-  extend T::Sig
-
   attr_reader :tap
 
   def initialize(tap, name)
@@ -125,9 +136,9 @@ class TapFormulaOrCaskUnavailableError < FormulaOrCaskUnavailableError
 end
 
 # Raised when a formula is not available.
+#
+# @api internal
 class FormulaUnavailableError < FormulaOrCaskUnavailableError
-  extend T::Sig
-
   attr_accessor :dependent
 
   sig { returns(T.nilable(String)) }
@@ -142,13 +153,10 @@ class FormulaUnavailableError < FormulaOrCaskUnavailableError
 end
 
 # Shared methods for formula class errors.
-#
-# @api private
 module FormulaClassUnavailableErrorModule
-  extend T::Sig
-
   attr_reader :path, :class_name, :class_list
 
+  sig { returns(String) }
   def to_s
     s = super
     s += "\nIn formula file: #{path}"
@@ -188,11 +196,7 @@ class FormulaClassUnavailableError < FormulaUnavailableError
 end
 
 # Shared methods for formula unreadable errors.
-#
-# @api private
 module FormulaUnreadableErrorModule
-  extend T::Sig
-
   attr_reader :formula_error
 
   sig { returns(String) }
@@ -223,17 +227,11 @@ class TapFormulaUnavailableError < FormulaUnavailableError
     super "#{tap}/#{name}"
   end
 
+  sig { returns(String) }
   def to_s
     s = super
     s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
     s
-  end
-end
-
-# Raised when a formula in a the core tap is unavailable.
-class CoreTapFormulaUnavailableError < TapFormulaUnavailableError
-  def initialize(name)
-    super CoreTap.instance, name
   end
 end
 
@@ -264,40 +262,20 @@ end
 
 # Raised when a formula with the same name is found in multiple taps.
 class TapFormulaAmbiguityError < RuntimeError
-  attr_reader :name, :paths, :formulae
+  attr_reader :name, :taps, :loaders
 
-  def initialize(name, paths)
+  def initialize(name, loaders)
     @name = name
-    @paths = paths
-    @formulae = paths.map do |path|
-      "#{Tap.from_path(path).name}/#{path.basename(".rb")}"
-    end
+    @loaders = loaders
+    @taps = loaders.map(&:tap)
+
+    formulae = taps.map { |tap| "#{tap}/#{name}" }
+    formula_list = formulae.map { |f| "\n       * #{f}" }.join
 
     super <<~EOS
-      Formulae found in multiple taps: #{formulae.map { |f| "\n       * #{f}" }.join}
+      Formulae found in multiple taps:#{formula_list}
 
-      Please use the fully-qualified name (e.g. #{formulae.first}) to refer to the formula.
-    EOS
-  end
-end
-
-# Raised when a formula's old name in a specific tap is found in multiple taps.
-class TapFormulaWithOldnameAmbiguityError < RuntimeError
-  attr_reader :name, :possible_tap_newname_formulae, :taps
-
-  def initialize(name, possible_tap_newname_formulae)
-    @name = name
-    @possible_tap_newname_formulae = possible_tap_newname_formulae
-
-    @taps = possible_tap_newname_formulae.map do |newname|
-      newname =~ HOMEBREW_TAP_FORMULA_REGEX
-      "#{Regexp.last_match(1)}/#{Regexp.last_match(2)}"
-    end
-
-    super <<~EOS
-      Formulae with '#{name}' old name found in multiple taps: #{taps.map { |t| "\n       * #{t}" }.join}
-
-      Please use the fully-qualified name (e.g. #{taps.first}/#{name}) to refer to the formula or use its new name.
+      Please use the fully-qualified name (e.g. #{formulae.first}) to refer to a specific formula.
     EOS
   end
 end
@@ -309,9 +287,19 @@ class TapUnavailableError < RuntimeError
   def initialize(name)
     @name = name
 
-    super <<~EOS
-      No available tap #{name}.
-    EOS
+    message = "No available tap #{name}.\n"
+    if [CoreTap.instance.name, CoreCaskTap.instance.name].include?(name)
+      command = "brew tap --force #{name}"
+      message += <<~EOS
+        Run #{Formatter.identifier(command)} to tap #{name}!
+      EOS
+    else
+      command = "brew tap-new #{name}"
+      message += <<~EOS
+        Run #{Formatter.identifier(command)} to create a new #{name} tap!
+      EOS
+    end
+    super message.freeze
   end
 end
 
@@ -324,9 +312,24 @@ class TapRemoteMismatchError < RuntimeError
     @expected_remote = expected_remote
     @actual_remote = actual_remote
 
-    super <<~EOS
+    super message
+  end
+
+  def message
+    <<~EOS
       Tap #{name} remote mismatch.
       #{expected_remote} != #{actual_remote}
+    EOS
+  end
+end
+
+# Raised when the remote of homebrew/core does not match HOMEBREW_CORE_GIT_REMOTE.
+class TapCoreRemoteMismatchError < TapRemoteMismatchError
+  def message
+    <<~EOS
+      Tap #{name} remote does not match HOMEBREW_CORE_GIT_REMOTE.
+      #{expected_remote} != #{actual_remote}
+      Please set HOMEBREW_CORE_GIT_REMOTE="#{actual_remote}" and run `brew update` instead.
     EOS
   end
 end
@@ -340,6 +343,19 @@ class TapAlreadyTappedError < RuntimeError
 
     super <<~EOS
       Tap #{name} already tapped.
+    EOS
+  end
+end
+
+# Raised when run `brew tap --custom-remote` without a remote URL.
+class TapNoCustomRemoteError < RuntimeError
+  attr_reader :name
+
+  def initialize(name)
+    @name = name
+
+    super <<~EOS
+      Tap #{name} with option `--custom-remote` but without a remote URL.
     EOS
   end
 end
@@ -379,8 +395,6 @@ end
 
 # Raised when a formula conflicts with another one.
 class FormulaConflictError < RuntimeError
-  extend T::Sig
-
   attr_reader :formula, :conflicts
 
   def initialize(formula, conflicts)
@@ -405,7 +419,7 @@ class FormulaConflictError < RuntimeError
       Please `brew unlink #{conflicts.map(&:name) * " "}` before continuing.
 
       Unlinking removes a formula's symlinks from #{HOMEBREW_PREFIX}. You can
-      link the formula again after the install finishes. You can --force this
+      link the formula again after the install finishes. You can `--force` this
       install, but the build may fail or cause obscure side effects in the
       resulting software.
     EOS
@@ -444,26 +458,37 @@ class BuildError < RuntimeError
   attr_reader :cmd, :args, :env
   attr_accessor :formula, :options
 
+  sig {
+    params(
+      formula: T.nilable(Formula),
+      cmd:     T.any(String, Pathname),
+      args:    T::Array[T.any(String, Integer, Pathname, Symbol)],
+      env:     T::Hash[String, T.untyped],
+    ).void
+  }
   def initialize(formula, cmd, args, env)
     @formula = formula
     @cmd = cmd
     @args = args
     @env = env
-    pretty_args = Array(args).map { |arg| arg.to_s.gsub " ", "\\ " }.join(" ")
+    pretty_args = Array(args).map { |arg| arg.to_s.gsub(/[\\ ]/, "\\\\\\0") }.join(" ")
     super "Failed executing: #{cmd} #{pretty_args}".strip
   end
 
+  sig { returns(T::Array[T.untyped]) }
   def issues
     @issues ||= fetch_issues
   end
 
+  sig { returns(T::Array[T.untyped]) }
   def fetch_issues
-    GitHub.issues_for_formula(formula.name, tap: formula.tap, state: "open")
-  rescue GitHub::API::RateLimitExceededError => e
-    opoo e.message
+    GitHub.issues_for_formula(formula.name, tap: formula.tap, state: "open", type: "issue")
+  rescue GitHub::API::Error => e
+    opoo "Unable to query GitHub for recent issues on the tap\n#{e.message}"
     []
   end
 
+  sig { params(verbose: T::Boolean).void }
   def dump(verbose: false)
     puts
 
@@ -486,23 +511,23 @@ class BuildError < RuntimeError
       end
     end
 
-    if formula.tap && defined?(OS::ISSUES_URL)
+    if formula.tap && !OS.unsupported_configuration?
       if formula.tap.official?
         puts Formatter.error(Formatter.url(OS::ISSUES_URL), label: "READ THIS")
       elsif (issues_url = formula.tap.issues_url)
         puts <<~EOS
-          If reporting this issue please do so at (not Homebrew/brew or Homebrew/core):
+          If reporting this issue please do so at (not Homebrew/brew or Homebrew/homebrew-core):
             #{Formatter.url(issues_url)}
         EOS
       else
         puts <<~EOS
-          If reporting this issue please do so to (not Homebrew/brew or Homebrew/core):
+          If reporting this issue please do so to (not Homebrew/brew or Homebrew/homebrew-core):
             #{formula.tap}
         EOS
       end
     else
       puts <<~EOS
-        Do not report this issue to Homebrew/brew or Homebrew/core!
+        Do not report this issue to Homebrew/brew or Homebrew/homebrew-core!
       EOS
     end
 
@@ -530,7 +555,7 @@ end
 class UnbottledError < RuntimeError
   def initialize(formulae)
     msg = +<<~EOS
-      The following #{"formula".pluralize(formulae.count)} cannot be installed from #{"bottle".pluralize(formulae.count)} and must be
+      The following #{Utils.pluralize("formula", formulae.count, plural: "e")} cannot be installed from #{Utils.pluralize("bottle", formulae.count)} and must be
       built from source.
         #{formulae.to_sentence}
     EOS
@@ -540,7 +565,7 @@ class UnbottledError < RuntimeError
   end
 end
 
-# Raised by Homebrew.install, Homebrew.reinstall, and Homebrew.upgrade
+# Raised by `Homebrew.install`, `Homebrew.reinstall` and `Homebrew.upgrade`
 # if the user passes any flags/environment that would case a bottle-only
 # installation on a system without build tools to fail.
 class BuildFlagsError < RuntimeError
@@ -581,13 +606,16 @@ class CompilerSelectionError < RuntimeError
   end
 end
 
-# Raised in {Resource#fetch}.
+# Raised in {Downloadable#fetch}.
 class DownloadError < RuntimeError
-  def initialize(resource, cause)
+  attr_reader :cause
+
+  def initialize(downloadable, cause)
     super <<~EOS
-      Failed to download resource #{resource.download_name.inspect}
+      Failed to download resource #{downloadable.download_name.inspect}
       #{cause.message}
     EOS
+    @cause = cause
     set_backtrace(cause.backtrace)
   end
 end
@@ -613,8 +641,6 @@ end
 
 # Raised by {Kernel#safe_system} in `utils.rb`.
 class ErrorDuringExecution < RuntimeError
-  extend T::Sig
-
   attr_reader :cmd, :status, :output
 
   def initialize(cmd, status:, output: nil, secrets: [])
@@ -741,16 +767,6 @@ class ChildProcessError < RuntimeError
 
     # Clobber our real (but irrelevant) backtrace with that of the inner exception.
     set_backtrace inner["b"]
-  end
-end
-
-# Raised when a macOS version is unsupported.
-class MacOSVersionError < RuntimeError
-  attr_reader :version
-
-  def initialize(version)
-    @version = version
-    super "unknown or unsupported macOS version: #{version.inspect}"
   end
 end
 

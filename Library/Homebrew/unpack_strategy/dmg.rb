@@ -1,17 +1,19 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "tempfile"
+require "system_command"
 
 module UnpackStrategy
   # Strategy for unpacking disk images.
   class Dmg
-    extend T::Sig
-
+    extend SystemCommand::Mixin
     include UnpackStrategy
 
     # Helper module for listing the contents of a volume mounted from a disk image.
     module Bom
+      extend SystemCommand::Mixin
+
       DMG_METADATA = Set.new(%w[
         .background
         .com.apple.timemachine.donotpresent
@@ -27,119 +29,135 @@ module UnpackStrategy
       ]).freeze
       private_constant :DMG_METADATA
 
-      refine Pathname do
-        extend T::Sig
+      class Error < RuntimeError; end
 
-        # Check if path is considered disk image metadata.
-        sig { returns(T::Boolean) }
-        def dmg_metadata?
-          DMG_METADATA.include?(cleanpath.ascend.to_a.last.to_s)
-        end
-
-        # Check if path is a symlink to a system directory (commonly to /Applications).
-        sig { returns(T::Boolean) }
-        def system_dir_symlink?
-          symlink? && MacOS.system_dir?(dirname.join(readlink))
-        end
-
-        sig { returns(String) }
-        def bom
-          tries = 0
-          result = loop do
-            # rubocop:disable Style/AsciiComments
-            # We need to use `find` here instead of Ruby in order to properly handle
-            # file names containing special characters, such as “e” + “´” vs. “é”.
-            # rubocop:enable Style/AsciiComments
-            r = system_command("find", args: [".", "-print0"], chdir: self, print_stderr: false)
-            tries += 1
-
-            # Spurious bug on CI, which in most cases can be worked around by retrying.
-            break r unless r.stderr.match?(/Interrupted system call/i)
-
-            raise "Command `#{r.command.shelljoin}` was interrupted." if tries >= 3
-          end
-
-          odebug "Command `#{result.command.shelljoin}` in '#{self}' took #{tries} tries." if tries > 1
-
-          bom_paths = result.stdout.split("\0")
-
-          raise "BOM for path '#{self}' is empty." if bom_paths.empty?
-
-          bom_paths
-            .reject { |path| Pathname(path).dmg_metadata? }
-            .reject { |path| (self/path).system_dir_symlink? }
-            .join("\n")
+      class EmptyError < Error
+        def initialize(path)
+          super "BOM for path '#{path}' is empty."
         end
       end
+
+      # Check if path is considered disk image metadata.
+      sig { params(pathname: Pathname).returns(T::Boolean) }
+      def self.dmg_metadata?(pathname)
+        DMG_METADATA.include?(pathname.cleanpath.ascend.to_a.last.to_s)
+      end
+
+      # Check if path is a symlink to a system directory (commonly to /Applications).
+      sig { params(pathname: Pathname).returns(T::Boolean) }
+      def self.system_dir_symlink?(pathname)
+        pathname.symlink? && MacOS.system_dir?(pathname.dirname.join(pathname.readlink))
+      end
+
+      sig { params(pathname: Pathname).returns(String) }
+      def self.bom(pathname)
+        tries = 0
+        result = loop do
+          # We need to use `find` here instead of Ruby in order to properly handle
+          # file names containing special characters, such as “e” + “´” vs. “é”.
+          r = system_command("find", args: [".", "-print0"], chdir: pathname, print_stderr: false)
+          tries += 1
+
+          # Spurious bug on CI, which in most cases can be worked around by retrying.
+          break r unless r.stderr.match?(/Interrupted system call/i)
+
+          raise "Command `#{r.command.shelljoin}` was interrupted." if tries >= 3
+        end
+
+        odebug "Command `#{result.command.shelljoin}` in '#{pathname}' took #{tries} tries." if tries > 1
+
+        bom_paths = result.stdout.split("\0")
+
+        raise EmptyError, pathname if bom_paths.empty?
+
+        bom_paths
+          .reject { |path| dmg_metadata?(Pathname(path)) }
+          .reject { |path| system_dir_symlink?(pathname/path) }
+          .join("\n")
+      end
     end
-    private_constant :Bom
 
     # Strategy for unpacking a volume mounted from a disk image.
     class Mount
-      extend T::Sig
-
-      using Bom
       include UnpackStrategy
 
       def eject(verbose: false)
-        tries ||= 3
+        tries = 3
+        begin
+          return unless path.exist?
 
-        return unless path.exist?
+          if tries > 1
+            disk_info = system_command!(
+              "diskutil",
+              args:         ["info", "-plist", path],
+              print_stderr: false,
+              verbose:,
+            )
 
-        if tries > 1
-          disk_info = system_command!(
-            "diskutil",
-            args:         ["info", "-plist", path],
-            print_stderr: false,
-            verbose:      verbose,
-          )
+            # For HFS, just use <mount-path>
+            # For APFS, find the <physical-store> corresponding to <mount-path>
+            eject_paths = disk_info.plist
+                                   .fetch("APFSPhysicalStores", [])
+                                   .filter_map { |store| store["APFSPhysicalStore"] }
+                                   .presence || [path]
 
-          # For HFS, just use <mount-path>
-          # For APFS, find the <physical-store> corresponding to <mount-path>
-          eject_paths = disk_info.plist
-                                 .fetch("APFSPhysicalStores", [])
-                                 .map { |store| store["APFSPhysicalStore"] }
-                                 .compact
-                                 .presence || [path]
-
-          eject_paths.each do |eject_path|
+            eject_paths.each do |eject_path|
+              system_command! "diskutil",
+                              args:         ["eject", eject_path],
+                              print_stderr: false,
+                              verbose:
+            end
+          else
             system_command! "diskutil",
-                            args:         ["eject", eject_path],
+                            args:         ["unmount", "force", path],
                             print_stderr: false,
-                            verbose:      verbose
+                            verbose:
           end
-        else
-          system_command! "diskutil",
-                          args:         ["unmount", "force", path],
-                          print_stderr: false,
-                          verbose:      verbose
-        end
-      rescue ErrorDuringExecution => e
-        raise e if (tries -= 1).zero?
+        rescue ErrorDuringExecution => e
+          raise e if (tries -= 1).zero?
 
-        sleep 1
-        retry
+          sleep 1
+          retry
+        end
       end
 
       private
 
       sig { override.params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).returns(T.untyped) }
       def extract_to_dir(unpack_dir, basename:, verbose:)
+        tries = 3
+        bom = begin
+          Bom.bom(path)
+        rescue Bom::EmptyError => e
+          raise e if (tries -= 1).zero?
+
+          sleep 1
+          retry
+        end
+
         Tempfile.open(["", ".bom"]) do |bomfile|
           bomfile.close
 
           Tempfile.open(["", ".list"]) do |filelist|
-            filelist.puts(path.bom)
+            filelist.puts(bom)
             filelist.close
 
             system_command! "mkbom",
                             args:    ["-s", "-i", filelist.path, "--", bomfile.path],
-                            verbose: verbose
+                            verbose:
           end
 
-          system_command! "ditto",
-                          args:    ["--bom", bomfile.path, "--", path, unpack_dir],
-                          verbose: verbose
+          bomfile_path = T.must(bomfile.path)
+
+          # Ditto will try to write as the UID, not the EUID and the Tempfile has 0700 permissions.
+          if Process.euid != Process.uid
+            FileUtils.chown(nil, Process.gid, bomfile_path)
+            FileUtils.chmod "g+rw", bomfile_path
+          end
+
+          system_command!("ditto",
+                          args:    ["--bom", bomfile_path, "--", path, unpack_dir],
+                          verbose:)
 
           FileUtils.chmod "u+w", Pathname.glob(unpack_dir/"**/*", File::FNM_DOTMATCH).reject(&:symlink?)
         end
@@ -161,17 +179,17 @@ module UnpackStrategy
 
     sig { override.params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).returns(T.untyped) }
     def extract_to_dir(unpack_dir, basename:, verbose:)
-      mount(verbose: verbose) do |mounts|
+      mount(verbose:) do |mounts|
         raise "No mounts found in '#{path}'; perhaps this is a bad disk image?" if mounts.empty?
 
         mounts.each do |mount|
-          mount.extract(to: unpack_dir, verbose: verbose)
+          mount.extract(to: unpack_dir, verbose:)
         end
       end
     end
 
     def mount(verbose: false)
-      Dir.mktmpdir do |mount_dir|
+      Dir.mktmpdir("homebrew-dmg", HOMEBREW_TEMP) do |mount_dir|
         mount_dir = Pathname(mount_dir)
 
         without_eula = system_command(
@@ -182,7 +200,7 @@ module UnpackStrategy
           ],
           input:        "qn\n",
           print_stderr: false,
-          verbose:      verbose,
+          verbose:,
         )
 
         # If mounting without agreeing to EULA succeeded, there is none.
@@ -198,7 +216,7 @@ module UnpackStrategy
             args:    [
               "convert", *quiet_flag, "-format", "UDTO", "-o", cdr_path, path
             ],
-            verbose: verbose,
+            verbose:,
           )
 
           with_eula = system_command!(
@@ -207,7 +225,7 @@ module UnpackStrategy
               "attach", "-plist", "-nobrowse", "-readonly",
               "-mountrandom", mount_dir, cdr_path
             ],
-            verbose: verbose,
+            verbose:,
           )
 
           if verbose && !(eula_text = without_eula.stdout).empty?
@@ -219,8 +237,7 @@ module UnpackStrategy
 
         mounts = if plist.respond_to?(:fetch)
           plist.fetch("system-entities", [])
-               .map { |entity| entity["mount-point"] }
-               .compact
+               .filter_map { |entity| entity["mount-point"] }
                .map { |path| Mount.new(path) }
         else
           []
@@ -230,7 +247,7 @@ module UnpackStrategy
           yield mounts
         ensure
           mounts.each do |mount|
-            mount.eject(verbose: verbose)
+            mount.eject(verbose:)
           end
         end
       end

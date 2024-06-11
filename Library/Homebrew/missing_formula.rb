@@ -5,13 +5,11 @@ require "formulary"
 
 module Homebrew
   # Helper module for checking if there is a reason a formula is missing.
-  #
-  # @api private
   module MissingFormula
     class << self
       def reason(name, silent: false, show_info: false)
-        cask_reason(name, silent: silent, show_info: show_info) || disallowed_reason(name) ||
-          tap_migration_reason(name) || deleted_reason(name, silent: silent)
+        cask_reason(name, silent:, show_info:) || disallowed_reason(name) ||
+          tap_migration_reason(name) || deleted_reason(name, silent:)
       end
 
       def disallowed_reason(name)
@@ -26,7 +24,7 @@ module Homebrew
         EOS
         when "pil" then <<~EOS
           Instead of PIL, consider pillow:
-            pip2 install pillow
+            brew install pillow
         EOS
         when "macruby" then <<~EOS
           MacRuby has been discontinued. Consider RubyMotion:
@@ -36,13 +34,9 @@ module Homebrew
           lzma is now part of the xz formula:
             brew install xz
         EOS
-        when "sshpass" then <<~EOS
-          We won't add sshpass because it makes it too easy for novice SSH users to
-          ruin SSH's security.
-        EOS
         when "gsutil" then <<~EOS
           gsutil is available through pip:
-            pip2 install gsutil
+            pip3 install gsutil
         EOS
         when "gfortran" then <<~EOS
           GNU Fortran is part of the GCC formula:
@@ -88,6 +82,12 @@ module Homebrew
         when "uconv" then <<~EOS
           uconv is part of the icu4c formula:
             brew install icu4c
+        EOS
+        when "postgresql", "postgres" then <<~EOS
+          postgresql breaks existing databases on upgrade without human intervention.
+
+          See a more specific version to install with:
+            brew formulae | grep postgresql@
         EOS
         end
       end
@@ -148,6 +148,20 @@ module Homebrew
             end
           end
 
+          # Optimization for the core tap which has many monthly commits
+          if tap.core_tap?
+            # Check if the formula has been deleted in the last month.
+            diff_command = ["git", "diff", "--diff-filter=D", "--name-only",
+                            "@{'1 month ago'}", "--", relative_path]
+            deleted_formula = Utils.popen_read(*diff_command)
+
+            if deleted_formula.blank?
+              ofail "No previously deleted formula found." unless silent
+              return
+            end
+          end
+
+          # Find commit where formula was deleted in the last month.
           log_command = "git log --since='1 month ago' --diff-filter=D " \
                         "--name-only --max-count=1 " \
                         "--format=%H\\\\n%h\\\\n%B -- #{relative_path}"
