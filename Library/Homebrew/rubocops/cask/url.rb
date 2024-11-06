@@ -1,5 +1,7 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
+
+require "rubocops/shared/url_helper"
 
 module RuboCop
   module Cop
@@ -19,14 +21,22 @@ module RuboCop
       # ```
       class Url < Base
         extend AutoCorrector
-        extend Forwardable
         include OnUrlStanza
+        include UrlHelper
 
         def on_url_stanza(stanza)
-          return if stanza.stanza_node.block_type?
+          if stanza.stanza_node.block_type?
+            if cask_tap == "homebrew-cask"
+              add_offense(stanza.stanza_node, message: 'Do not use `url "..." do` blocks in Homebrew/homebrew-cask.')
+            end
+            return
+          end
 
           url_stanza = stanza.stanza_node.first_argument
           hash_node = stanza.stanza_node.last_argument
+
+          audit_url(:cask, [stanza.stanza_node], [], livecheck_url: false)
+
           return unless hash_node.hash_type?
 
           hash_node.each_pair do |key_node, value_node|

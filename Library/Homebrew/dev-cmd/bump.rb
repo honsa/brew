@@ -4,6 +4,7 @@
 require "abstract_command"
 require "bump_version_parser"
 require "livecheck/livecheck"
+require "utils/repology"
 
 module Homebrew
   module DevCmd
@@ -15,24 +16,31 @@ module Homebrew
         const :current_version, BumpVersionParser
         const :repology_latest, T.any(String, Version)
         const :new_version, BumpVersionParser
-        const :open_pull_requests, T.nilable(T.any(T::Array[String], String))
-        const :closed_pull_requests, T.nilable(T.any(T::Array[String], String))
+        const :duplicate_pull_requests, T.nilable(T.any(T::Array[String], String))
+        const :maybe_duplicate_pull_requests, T.nilable(T.any(T::Array[String], String))
       end
 
       cmd_args do
         description <<~EOS
-          Display out-of-date brew formulae and the latest version available. If the
+          Displays out-of-date packages and the latest version available. If the
           returned current and livecheck versions differ or when querying specific
-          formulae, also displays whether a pull request has been opened with the URL.
+          packages, also displays whether a pull request has been opened with the URL.
         EOS
         switch "--full-name",
                description: "Print formulae/casks with fully-qualified names."
         switch "--no-pull-requests",
                description: "Do not retrieve pull requests from GitHub."
+        switch "--auto",
+               description: "Read the list of formulae/casks from the tap autobump list.",
+               hidden:      true
         switch "--formula", "--formulae",
                description: "Check only formulae."
         switch "--cask", "--casks",
                description: "Check only casks."
+        switch "--eval-all",
+               description: "Evaluate all formulae and casks."
+        switch "--repology",
+               description: "Use Repology to check for outdated packages."
         flag   "--tap=",
                description: "Check formulae and casks within the given tap, specified as <user>`/`<repo>."
         switch "--installed",
@@ -41,13 +49,13 @@ module Homebrew
                description: "Don't try to fork the repository."
         switch "--open-pr",
                description: "Open a pull request for the new version if none have been opened yet."
-        flag   "--limit=",
-               description: "Limit number of package results returned."
         flag   "--start-with=",
                description: "Letter or word that the list of package results should alphabetically follow."
 
         conflicts "--cask", "--formula"
         conflicts "--tap=", "--installed"
+        conflicts "--eval-all", "--installed"
+        conflicts "--installed", "--auto"
         conflicts "--no-pull-requests", "--open-pr"
 
         named_args [:formula, :cask], without_api: true
@@ -57,14 +65,29 @@ module Homebrew
       def run
         Homebrew.install_bundler_gems!(groups: ["livecheck"])
 
-        if args.limit.present? && !args.formula? && !args.cask?
-          raise UsageError, "`--limit` must be used with either `--formula` or `--cask`."
-        end
-
         Homebrew.with_no_api_env do
-          formulae_and_casks = if args.tap
+          eval_all = args.eval_all? || Homebrew::EnvConfig.eval_all?
+
+          formulae_and_casks = if args.auto?
+            raise UsageError, "`--formula` or `--cask` must be passed with `--auto`." if !args.formula? && !args.cask?
+
+            tap_arg = args.tap
+            raise UsageError, "`--tap=` must be passed with `--auto`." if tap_arg.blank?
+
+            tap = Tap.fetch(tap_arg)
+            autobump_list = tap.autobump
+            what = args.cask? ? "casks" : "formulae"
+            raise UsageError, "No autobumped #{what} found." if autobump_list.blank?
+
+            autobump_list.map do |name|
+              qualified_name = "#{tap.name}/#{name}"
+              next Cask::CaskLoader.load(qualified_name) if args.cask?
+
+              Formulary.factory(qualified_name)
+            end
+          elsif args.tap
             tap = Tap.fetch(T.must(args.tap))
-            raise UsageError, "`--tap` cannot be used with official taps." if tap.official?
+            raise UsageError, "`--tap` requires `--auto` for official taps." if tap.official?
 
             formulae = args.cask? ? [] : tap.formula_files.map { |path| Formulary.factory(path) }
             casks = args.formula? ? [] : tap.cask_files.map { |path| Cask::CaskLoader.load(path) }
@@ -75,13 +98,28 @@ module Homebrew
             formulae + casks
           elsif args.named.present?
             args.named.to_formulae_and_casks_with_taps
+          elsif eval_all
+            formulae = args.cask? ? [] : Formula.all(eval_all:)
+            casks = args.formula? ? [] : Cask::Cask.all(eval_all:)
+            formulae + casks
+          else
+            raise UsageError,
+                  "`brew bump` without named arguments needs `--installed` or `--eval-all` passed or " \
+                  "`HOMEBREW_EVAL_ALL` set!"
+          end
+
+          if args.start_with
+            formulae_and_casks.select! do |formula_or_cask|
+              name = formula_or_cask.respond_to?(:token) ? formula_or_cask.token : formula_or_cask.name
+              name.start_with?(args.start_with)
+            end
           end
 
           formulae_and_casks = formulae_and_casks&.sort_by do |formula_or_cask|
             formula_or_cask.respond_to?(:token) ? formula_or_cask.token : formula_or_cask.name
           end
 
-          unless Utils::Curl.curl_supports_tls13?
+          if args.repology? && !Utils::Curl.curl_supports_tls13?
             begin
               ensure_formula_installed!("curl", reason: "Repology queries") unless HOMEBREW_BREWED_CURL_PATH.exist?
             rescue FormulaUnavailableError
@@ -89,28 +127,22 @@ module Homebrew
             end
           end
 
-          if formulae_and_casks.present?
-            handle_formula_and_casks(formulae_and_casks)
-          else
-            handle_api_response
-          end
+          handle_formulae_and_casks(formulae_and_casks)
         end
       end
 
       private
 
-      sig { params(_formula_or_cask: T.any(Formula, Cask::Cask)).returns(T::Boolean) }
-      def skip_repology?(_formula_or_cask)
-        # (ENV["CI"].present? && args.open_pr? && formula_or_cask.livecheckable?) ||
-        #   (formula_or_cask.is_a?(Formula) && formula_or_cask.versioned_formula?)
+      sig { params(formula_or_cask: T.any(Formula, Cask::Cask)).returns(T::Boolean) }
+      def skip_repology?(formula_or_cask)
+        return true unless args.repology?
 
-        # Unconditionally skip Repology queries for now because we've been blocked.
-        # TODO: get unblocked and make this conditional on e.g. args.repology?
-        true
+        (ENV["CI"].present? && args.open_pr? && formula_or_cask.livecheckable?) ||
+          (formula_or_cask.is_a?(Formula) && formula_or_cask.versioned_formula?)
       end
 
       sig { params(formulae_and_casks: T::Array[T.any(Formula, Cask::Cask)]).void }
-      def handle_formula_and_casks(formulae_and_casks)
+      def handle_formulae_and_casks(formulae_and_casks)
         Livecheck.load_other_tap_strategies(formulae_and_casks)
 
         ambiguous_casks = []
@@ -152,67 +184,6 @@ module Homebrew
             package_data&.values&.first || [],
             ambiguous_cask: ambiguous_casks.include?(formula_or_cask),
           )
-        end
-      end
-
-      sig { void }
-      def handle_api_response
-        limit = args.limit.to_i if args.limit.present?
-
-        api_response = {}
-        unless args.cask?
-          api_response[:formulae] =
-            Repology.parse_api_response(limit, args.start_with, repository: Repology::HOMEBREW_CORE)
-        end
-        unless args.formula?
-          api_response[:casks] =
-            Repology.parse_api_response(limit, args.start_with, repository: Repology::HOMEBREW_CASK)
-        end
-
-        api_response.each_with_index do |(package_type, outdated_packages), idx|
-          repository = if package_type == :formulae
-            Repology::HOMEBREW_CORE
-          else
-            Repology::HOMEBREW_CASK
-          end
-          puts if idx.positive?
-          oh1 package_type.capitalize if api_response.size > 1
-
-          outdated_packages.each_with_index do |(_name, repositories), i|
-            break if limit && i >= limit
-
-            homebrew_repo = repositories.find do |repo|
-              repo["repo"] == repository
-            end
-
-            next if homebrew_repo.blank?
-
-            formula_or_cask = begin
-              if repository == Repology::HOMEBREW_CORE
-                Formula[homebrew_repo["srcname"]]
-              else
-                Cask::CaskLoader.load(homebrew_repo["srcname"])
-              end
-            rescue
-              next
-            end
-            name = Livecheck.package_or_resource_name(formula_or_cask)
-            ambiguous_cask = begin
-              formula_or_cask.is_a?(Cask::Cask) && !args.cask? && Formula[name]
-            rescue FormulaUnavailableError
-              false
-            end
-
-            puts if i.positive?
-            next if skip_ineligible_formulae(formula_or_cask)
-
-            retrieve_and_display_info_and_open_pr(
-              formula_or_cask,
-              name,
-              repositories,
-              ambiguous_cask:,
-            )
-          end
         end
       end
 
@@ -295,14 +266,13 @@ module Homebrew
         params(
           formula_or_cask: T.any(Formula, Cask::Cask),
           name:            String,
-          state:           String,
           version:         T.nilable(String),
         ).returns T.nilable(T.any(T::Array[String], String))
       }
-      def retrieve_pull_requests(formula_or_cask, name, state:, version: nil)
-        tap_remote_repo = formula_or_cask.tap&.remote_repo || formula_or_cask.tap&.full_name
+      def retrieve_pull_requests(formula_or_cask, name, version: nil)
+        tap_remote_repo = formula_or_cask.tap&.remote_repository || formula_or_cask.tap&.full_name
         pull_requests = begin
-          GitHub.fetch_pull_requests(name, tap_remote_repo, state:, version:)
+          GitHub.fetch_pull_requests(name, tap_remote_repo, version:)
         rescue GitHub::API::ValidationFailedError => e
           odebug "Error fetching pull requests for #{formula_or_cask} #{name}: #{e}"
           nil
@@ -314,7 +284,7 @@ module Homebrew
       sig {
         params(
           formula_or_cask: T.any(Formula, Cask::Cask),
-          repositories:    T::Array[T.untyped],
+          repositories:    T::Array[String],
           name:            String,
         ).returns(VersionBumpInfo)
       }
@@ -349,7 +319,9 @@ module Homebrew
 
             livecheck_latest = livecheck_result(loaded_formula_or_cask)
 
-            new_version_value = if (livecheck_latest.is_a?(Version) && livecheck_latest >= current_version_value) ||
+            new_version_value = if (livecheck_latest.is_a?(Version) &&
+                                    Livecheck::LivecheckVersion.create(formula_or_cask, livecheck_latest) >=
+                                    Livecheck::LivecheckVersion.create(formula_or_cask, current_version_value)) ||
                                    current_version_value == "latest"
               livecheck_latest
             elsif livecheck_latest.is_a?(String) && livecheck_latest.start_with?("skipped")
@@ -401,12 +373,12 @@ module Homebrew
           new_version.general.to_s
         end
 
-        open_pull_requests = if !args.no_pull_requests? && (args.named.present? || new_version.present?)
-          retrieve_pull_requests(formula_or_cask, name, state: "open")
+        duplicate_pull_requests = unless args.no_pull_requests?
+          retrieve_pull_requests(formula_or_cask, name, version: pull_request_version)
         end.presence
 
-        closed_pull_requests = if !args.no_pull_requests? && open_pull_requests.blank? && new_version.present?
-          retrieve_pull_requests(formula_or_cask, name, state: "closed", version: pull_request_version)
+        maybe_duplicate_pull_requests = if !args.no_pull_requests? && duplicate_pull_requests.blank?
+          retrieve_pull_requests(formula_or_cask, name)
         end.presence
 
         VersionBumpInfo.new(
@@ -416,8 +388,8 @@ module Homebrew
           current_version:,
           repology_latest:,
           new_version:,
-          open_pull_requests:,
-          closed_pull_requests:,
+          duplicate_pull_requests:,
+          maybe_duplicate_pull_requests:,
         )
       end
 
@@ -425,7 +397,7 @@ module Homebrew
         params(
           formula_or_cask: T.any(Formula, Cask::Cask),
           name:            String,
-          repositories:    T::Array[T.untyped],
+          repositories:    T::Array[String],
           ambiguous_cask:  T::Boolean,
         ).void
       }
@@ -467,8 +439,8 @@ module Homebrew
         end
 
         version_label = version_info.version_name
-        open_pull_requests = version_info.open_pull_requests.presence
-        closed_pull_requests = version_info.closed_pull_requests.presence
+        duplicate_pull_requests = version_info.duplicate_pull_requests.presence
+        maybe_duplicate_pull_requests = version_info.maybe_duplicate_pull_requests.presence
 
         ohai title
         puts <<~EOS
@@ -486,8 +458,8 @@ module Homebrew
           EOS
         end
         puts <<~EOS unless args.no_pull_requests?
-          Open pull requests:       #{open_pull_requests || "none"}
-          Closed pull requests:     #{closed_pull_requests || "none"}
+          Duplicate pull requests:       #{duplicate_pull_requests       || "none"}
+          Maybe duplicate pull requests: #{maybe_duplicate_pull_requests || "none"}
         EOS
 
         return unless args.open_pr?
@@ -507,7 +479,7 @@ module Homebrew
           return
         end
 
-        return if open_pull_requests.present? || closed_pull_requests.present?
+        return if duplicate_pull_requests.present?
 
         version_args = if version_info.multiple_versions
           %W[--version-arm=#{new_version.arm} --version-intel=#{new_version.intel}]

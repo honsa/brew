@@ -1,4 +1,4 @@
-# typed: true
+# typed: strict
 # frozen_string_literal: true
 
 require "abstract_command"
@@ -39,17 +39,17 @@ module Homebrew
         odie "Tap is already installed!" if tap.installed?
 
         titleized_user = tap.user.dup
-        titleized_repo = tap.repo.dup
+        titleized_repository = tap.repository.dup
         titleized_user[0] = titleized_user[0].upcase
-        titleized_repo[0] = titleized_repo[0].upcase
-        root_url = GitHubPackages.root_url(tap.user, "homebrew-#{tap.repo}") if args.github_packages?
+        titleized_repository[0] = titleized_repository[0].upcase
+        root_url = GitHubPackages.root_url(tap.user, "homebrew-#{tap.repository}") if args.github_packages?
 
         (tap.path/"Formula").mkpath
 
         # FIXME: https://github.com/errata-ai/vale/issues/818
         # <!-- vale off -->
         readme = <<~MARKDOWN
-          # #{titleized_user} #{titleized_repo}
+          # #{titleized_user} #{titleized_repository}
 
           ## How do I install these formulae?
 
@@ -84,7 +84,7 @@ module Homebrew
             test-bot:
               strategy:
                 matrix:
-                  os: [ubuntu-22.04, macos-13]
+                  os: [ubuntu-22.04, macos-13, macos-15]
               runs-on: ${{ matrix.os }}
               steps:
                 - name: Set up Homebrew
@@ -95,8 +95,8 @@ module Homebrew
                   uses: actions/cache@v4
                   with:
                     path: ${{ steps.set-up-homebrew.outputs.gems-path }}
-                    key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
-                    restore-keys: ${{ runner.os }}-rubygems-
+                    key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+                    restore-keys: ${{ matrix.os }}-rubygems-
 
                 - run: brew test-bot --only-cleanup-before
 
@@ -197,6 +197,7 @@ module Homebrew
 
       private
 
+      sig { params(tap: Tap, filename: T.any(String, Pathname), content: String).void }
       def write_path(tap, filename, content)
         path = tap.path/filename
         tap.path.mkpath

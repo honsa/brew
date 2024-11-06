@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "attrable"
@@ -7,6 +7,7 @@ require "cask/cask_loader"
 require "cask/config"
 require "cask/dsl"
 require "cask/metadata"
+require "cask/tab"
 require "utils/bottles"
 require "extend/api_hashable"
 
@@ -116,8 +117,8 @@ module Cask
       @dsl.language_eval
     end
 
-    DSL::DSL_METHODS.each do |method_name|
-      define_method(method_name) { |&block| @dsl.send(method_name, &block) }
+    ::Cask::DSL::DSL_METHODS.each do |method_name|
+      define_method(method_name) { |*args, &block| @dsl.send(method_name, *args, &block) }
     end
 
     sig { params(caskroom_path: Pathname).returns(T::Array[[String, String]]) }
@@ -158,11 +159,22 @@ module Cask
       languages.any? || artifacts.any?(Artifact::AbstractFlightBlock)
     end
 
+    def uninstall_flight_blocks?
+      artifacts.any? do |artifact|
+        case artifact
+        when Artifact::PreflightBlock
+          artifact.directives.key?(:uninstall_preflight)
+        when Artifact::PostflightBlock
+          artifact.directives.key?(:uninstall_postflight)
+        end
+      end
+    end
+
     sig { returns(T.nilable(Time)) }
     def install_time
       # <caskroom_path>/.metadata/<version>/<timestamp>/Casks/<token>.{rb,json} -> <timestamp>
-      time = installed_caskfile&.dirname&.dirname&.basename&.to_s
-      Time.strptime(time, Metadata::TIMESTAMP_FORMAT) if time
+      caskfile = installed_caskfile
+      Time.strptime(caskfile.dirname.dirname.basename.to_s, Metadata::TIMESTAMP_FORMAT) if caskfile
     end
 
     sig { returns(T.nilable(Pathname)) }
@@ -209,11 +221,17 @@ module Cask
       bundle_version&.version
     end
 
+    def tab
+      Tab.for_cask(self)
+    end
+
     def config_path
       metadata_main_container_path/"config.json"
     end
 
     def checksumable?
+      return false if (url = self.url).nil?
+
       DownloadStrategyDetector.detect(url.to_s, url.using) <= AbstractFileDownloadStrategy
     end
 
@@ -307,6 +325,8 @@ module Cask
 
     def tap_git_head
       @tap_git_head ||= tap&.git_head
+    rescue TapUnavailableError
+      nil
     end
 
     def populate_from_api!(json_cask)
@@ -440,7 +460,9 @@ module Cask
           MacOSVersion::SYMBOLS.keys.product(OnSystem::ARCH_OPTIONS).each do |os, arch|
             bottle_tag = ::Utils::Bottles::Tag.new(system: os, arch:)
             next unless bottle_tag.valid_combination?
-            next if depends_on.macos && !depends_on.macos.allows?(bottle_tag.to_macos_version)
+            next if depends_on.macos &&
+                    !@dsl.depends_on_set_in_block? &&
+                    !depends_on.macos.allows?(bottle_tag.to_macos_version)
 
             Homebrew::SimulateSystem.with(os:, arch:) do
               refresh
@@ -463,6 +485,27 @@ module Cask
       hash
     end
 
+    def artifacts_list(compact: false, uninstall_only: false)
+      artifacts.filter_map do |artifact|
+        case artifact
+        when Artifact::AbstractFlightBlock
+          uninstall_flight_block = artifact.directives.key?(:uninstall_preflight) ||
+                                   artifact.directives.key?(:uninstall_postflight)
+          next if uninstall_only && !uninstall_flight_block
+
+          # Only indicate whether this block is used as we don't load it from the API
+          # We can skip this entirely once we move to internal JSON v3.
+          { artifact.summarize.to_sym => nil } unless compact
+        else
+          zap_artifact = artifact.is_a?(Artifact::Zap)
+          uninstall_artifact = artifact.respond_to?(:uninstall_phase) || artifact.respond_to?(:post_uninstall_phase)
+          next if uninstall_only && !zap_artifact && !uninstall_artifact
+
+          { artifact.class.dsl_key => artifact.to_args }
+        end
+      end
+    end
+
     private
 
     sig { returns(T.nilable(Homebrew::BundleVersion)) }
@@ -478,19 +521,6 @@ module Cask
       hash["installed"] = installed_version
       hash["outdated"] = outdated?
       hash
-    end
-
-    def artifacts_list(compact: false)
-      artifacts.filter_map do |artifact|
-        case artifact
-        when Artifact::AbstractFlightBlock
-          # Only indicate whether this block is used as we don't load it from the API
-          # We can skip this entirely once we move to internal JSON v3.
-          { artifact.summarize => nil } unless compact
-        else
-          { artifact.class.dsl_key => artifact.to_args }
-        end
-      end
     end
 
     def url_specs

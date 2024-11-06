@@ -105,6 +105,10 @@ module Language
 
     # Mixin module for {Formula} adding shebang rewrite features.
     module Shebang
+      extend T::Helpers
+
+      requires_ancestor { Formula }
+
       module_function
 
       # A regex to match potential shebang permutations.
@@ -128,7 +132,7 @@ module Language
         python_path = if use_python_from_path
           "/usr/bin/env python3"
         else
-          python_deps = formula.deps.map(&:name).grep(/^python(@.+)?$/)
+          python_deps = formula.deps.select(&:required?).map(&:name).grep(/^python(@.+)?$/)
           raise ShebangDetectionError.new("Python", "formula does not depend on Python") if python_deps.empty?
           if python_deps.length > 1
             raise ShebangDetectionError.new("Python", "formula has multiple Python dependencies")
@@ -144,6 +148,10 @@ module Language
 
     # Mixin module for {Formula} adding virtualenv support features.
     module Virtualenv
+      extend T::Helpers
+
+      requires_ancestor { Formula }
+
       # Instantiates, creates and yields a {Virtualenv} object for use from
       # {Formula#install}, which provides helper methods for instantiating and
       # installing packages into a Python virtualenv.
@@ -179,17 +187,21 @@ module Language
         venv.create(system_site_packages:, without_pip:)
 
         # Find any Python bindings provided by recursive dependencies
-        formula_deps = formula.recursive_dependencies
-        pth_contents = formula_deps.filter_map do |d|
-          next if d.build? || d.test?
+        pth_contents = []
+        formula.recursive_dependencies do |dependent, dep|
+          Dependency.prune if dep.build? || dep.test?
+          # Apply default filter
+          Dependency.prune if (dep.optional? || dep.recommended?) && !dependent.build.with?(dep)
           # Do not add the main site-package provided by the brewed
           # Python formula, to keep the virtual-env's site-package pristine
-          next if python_names.include? d.name
+          Dependency.prune if python_names.include? dep.name
+          # Skip uses_from_macos dependencies as these imply no Python bindings
+          Dependency.prune if dep.uses_from_macos?
 
-          dep_site_packages = Formula[d.name].opt_prefix/Language::Python.site_packages(python)
-          next unless dep_site_packages.exist?
+          dep_site_packages = dep.to_formula.opt_prefix/Language::Python.site_packages(python)
+          Dependency.prune unless dep_site_packages.exist?
 
-          "import site; site.addsitedir('#{dep_site_packages}')\n"
+          pth_contents << "import site; site.addsitedir('#{dep_site_packages}')\n"
         end
         (venv.site_packages/"homebrew_deps.pth").write pth_contents.join unless pth_contents.empty?
 
@@ -228,7 +240,7 @@ module Language
         ).returns(Virtualenv)
       }
       def virtualenv_install_with_resources(using: nil, system_site_packages: true, without_pip: true,
-                                            link_manpages: false, without: nil, start_with: nil, end_with: nil)
+                                            link_manpages: true, without: nil, start_with: nil, end_with: nil)
         python = using
         if python.nil?
           wanted = python_names.select { |py| needs_python?(py) }
@@ -322,8 +334,9 @@ module Language
           # Robustify symlinks to survive python patch upgrades
           @venv_root.find do |f|
             next unless f.symlink?
-            next unless (rp = f.realpath.to_s).start_with? HOMEBREW_CELLAR
+            next unless f.readlink.expand_path.to_s.start_with? HOMEBREW_CELLAR
 
+            rp = f.realpath.to_s
             version = rp.match %r{^#{HOMEBREW_CELLAR}/python@(.*?)/}o
             version = "@#{version.captures.first}" unless version.nil?
 
@@ -340,6 +353,18 @@ module Language
 
             prefix_path.sub! %r{^#{HOMEBREW_CELLAR}/python#{version}/[^/]+}, Formula["python#{version}"].opt_prefix
             prefix_file.atomic_write prefix_path
+          end
+
+          # Reduce some differences between macOS and Linux venv
+          lib64 = @venv_root/"lib64"
+          lib64.make_symlink "lib" unless lib64.exist?
+          if (cfg_file = @venv_root/"pyvenv.cfg").exist?
+            cfg = cfg_file.read
+            framework = "Frameworks/Python.framework/Versions"
+            cfg.match(%r{= *(#{HOMEBREW_CELLAR}/(python@[\d.]+)/[^/]+(?:/#{framework}/[\d.]+)?/bin)}) do |match|
+              cfg.sub! match[1].to_s, Formula[match[2]].opt_bin
+              cfg_file.atomic_write cfg
+            end
           end
 
           # Remove unnecessary activate scripts
@@ -366,7 +391,11 @@ module Language
           targets = Array(targets)
           targets.each do |t|
             if t.is_a?(Resource)
-              t.stage { do_install(Pathname.pwd, build_isolation:) }
+              t.stage do
+                target = Pathname.pwd
+                target /= t.downloader.basename if t.url&.end_with?("-none-any.whl")
+                do_install(target, build_isolation:)
+              end
             else
               t = t.lines.map(&:strip) if t.is_a?(String) && t.include?("\n")
               do_install(t, build_isolation:)
@@ -386,7 +415,7 @@ module Language
             build_isolation: T::Boolean,
           ).void
         }
-        def pip_install_and_link(targets, link_manpages: false, build_isolation: true)
+        def pip_install_and_link(targets, link_manpages: true, build_isolation: true)
           bin_before = Dir[@venv_root/"bin/*"].to_set
           man_before = Dir[@venv_root/"share/man/man*/*"].to_set if link_manpages
 

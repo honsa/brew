@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "timeout"
@@ -125,8 +125,8 @@ module Cask
               sleep 1
             end
             paths = [
-              +"/Library/LaunchAgents/#{service}.plist",
-              +"/Library/LaunchDaemons/#{service}.plist",
+              "/Library/LaunchAgents/#{service}.plist",
+              "/Library/LaunchDaemons/#{service}.plist",
             ]
             paths.each { |elt| elt.prepend(Dir.home).freeze } unless sudo
             paths = paths.map { |elt| Pathname(elt) }.select(&:exist?)
@@ -457,12 +457,13 @@ module Cask
       def trash_paths(*paths, command: nil, **_)
         return if paths.empty?
 
-        stdout, stderr, = system_command HOMEBREW_LIBRARY_PATH/"cask/utils/trash.swift",
-                                         args:         paths,
-                                         print_stderr: false
+        stdout, = system_command HOMEBREW_LIBRARY_PATH/"cask/utils/trash.swift",
+                                 args:         paths,
+                                 print_stderr: Homebrew::EnvConfig.developer?
 
-        trashed = stdout.split(":").sort
-        untrashable = stderr.split(":").sort
+        trashed, _, untrashable = stdout.partition("\n")
+        trashed = trashed.split(":")
+        untrashable = untrashable.split(":")
 
         return trashed, untrashable if untrashable.empty?
 
@@ -470,7 +471,7 @@ module Cask
           Utils.gain_permissions(path, ["-R"], SystemCommand) do
             system_command! HOMEBREW_LIBRARY_PATH/"cask/utils/trash.swift",
                             args:         [path],
-                            print_stderr: false
+                            print_stderr: Homebrew::EnvConfig.developer?
           end
 
           true

@@ -1,4 +1,4 @@
-# typed: true
+# typed: strict
 # frozen_string_literal: true
 
 require "abstract_command"
@@ -52,7 +52,7 @@ module Homebrew
             html_template_name = html_template(name)
 
             unless args.dry_run?
-              File.write("_data/cask/#{name}.json", "#{json}\n")
+              File.write("_data/cask/#{name.tr("+", "_")}.json", "#{json}\n")
               File.write("api/cask/#{name}.json", CASK_JSON_TEMPLATE)
               File.write("api/cask-source/#{name}.rb", cask_source)
               File.write("cask/#{name}.html", html_template_name)
@@ -71,6 +71,7 @@ module Homebrew
 
       private
 
+      sig { params(title: String).returns(String) }
       def html_template(title)
         <<~EOS
           ---

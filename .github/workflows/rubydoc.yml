@@ -16,10 +16,14 @@ env:
   HOMEBREW_BOOTSNAP: 1
   HOMEBREW_NO_INSTALL_CLEANUP: 1
 
+defaults:
+  run:
+    shell: bash -xeuo pipefail {0}
+
 jobs:
   rubydoc:
     if: github.repository == 'Homebrew/brew'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/rubydoc/Gemfile
     steps:
@@ -32,13 +36,14 @@ jobs:
           test-bot: false
 
       - name: Checkout Homebrew/rubydoc.brew.sh
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: Homebrew/rubydoc.brew.sh
           path: rubydoc
+          persist-credentials: false
 
       - name: Install Ruby
-        uses: ruby/setup-ruby@78c01b705fd9d5ad960d432d3a0cfa341d50e410 # v1.179.1
+        uses: ruby/setup-ruby@217c988b8c2bf2bacb2d5c78a7e7b18f8c34daed # v1.200.0
         with:
           bundler-cache: true
           working-directory: rubydoc

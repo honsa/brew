@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "requirement"
@@ -59,6 +59,13 @@ class MacOSRequirement < Requirement
     next true if @version
 
     false
+  end
+
+  def minimum_version
+    return MacOSVersion.new(HOMEBREW_MACOS_OLDEST_ALLOWED) if @comparator == "<=" || !version_specified?
+    return @version.min if @version.respond_to?(:to_ary)
+
+    @version
   end
 
   def allows?(other)

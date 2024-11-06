@@ -1,7 +1,6 @@
-# typed: true
+# typed: strict
 # frozen_string_literal: true
 
-require "pkg_version"
 require "version/parser"
 
 # A formula's version.
@@ -141,7 +140,7 @@ class Version
   private_constant :NullToken
 
   # Represents the absence of a token.
-  NULL_TOKEN = NullToken.new.freeze
+  NULL_TOKEN = T.let(NullToken.new.freeze, NullToken)
 
   # A token string.
   class StringToken < Token
@@ -328,7 +327,7 @@ class Version
     end
   end
 
-  SCAN_PATTERN = Regexp.union(
+  SCAN_PATTERN = T.let(Regexp.union(
     AlphaToken::PATTERN,
     BetaToken::PATTERN,
     PreToken::PATTERN,
@@ -337,7 +336,7 @@ class Version
     PostToken::PATTERN,
     NumericToken::PATTERN,
     StringToken::PATTERN,
-  ).freeze
+  ).freeze, Regexp)
   private_constant :SCAN_PATTERN
 
   sig { params(url: T.any(String, Pathname), specs: T.untyped).returns(Version) }
@@ -345,7 +344,7 @@ class Version
     parse(specs.fetch(:tag, url), detected_from_url: true)
   end
 
-  sig { params(spec: T.any(String, Pathname), detected_from_url: T::Boolean).returns(T.attached_class) }
+  sig { params(spec: T.any(String, Pathname), detected_from_url: T::Boolean).returns(Version) }
   def self.parse(spec, detected_from_url: false)
     spec = CGI.unescape(spec.to_s) if detected_from_url
 
@@ -359,22 +358,22 @@ class Version
     NULL
   end
 
-  NUMERIC_WITH_OPTIONAL_DOTS = /(?:\d+(?:\.\d+)*)/.source.freeze
+  NUMERIC_WITH_OPTIONAL_DOTS = T.let(/(?:\d+(?:\.\d+)*)/.source.freeze, String)
   private_constant :NUMERIC_WITH_OPTIONAL_DOTS
 
-  NUMERIC_WITH_DOTS = /(?:\d+(?:\.\d+)+)/.source.freeze
+  NUMERIC_WITH_DOTS = T.let(/(?:\d+(?:\.\d+)+)/.source.freeze, String)
   private_constant :NUMERIC_WITH_DOTS
 
-  MINOR_OR_PATCH = /(?:\d+(?:\.\d+){1,2})/.source.freeze
+  MINOR_OR_PATCH = T.let(/(?:\d+(?:\.\d+){1,2})/.source.freeze, String)
   private_constant :MINOR_OR_PATCH
 
-  CONTENT_SUFFIX = /(?:[._-](?i:bin|dist|stable|src|sources?|final|full))/.source.freeze
+  CONTENT_SUFFIX = T.let(/(?:[._-](?i:bin|dist|stable|src|sources?|final|full))/.source.freeze, String)
   private_constant :CONTENT_SUFFIX
 
-  PRERELEASE_SUFFIX = /(?:[._-]?(?i:alpha|beta|pre|rc)\.?\d{,2})/.source.freeze
+  PRERELEASE_SUFFIX = T.let(/(?:[._-]?(?i:alpha|beta|pre|rc)\.?\d{,2})/.source.freeze, String)
   private_constant :PRERELEASE_SUFFIX
 
-  VERSION_PARSERS = [
+  VERSION_PARSERS = T.let([
     # date-based versioning
     # e.g. `2023-09-28.tar.gz`
     # e.g. `ltopers-v2017-04-14.tar.gz`
@@ -463,8 +462,11 @@ class Version
     # e.g. `https://search.maven.org/remotecontent?filepath=org/apache/orc/orc-tools/1.2.3/orc-tools-1.2.3-uber.jar`
     StemParser.new(/-(#{NUMERIC_WITH_DOTS})-/),
 
-    # e.g. `dash_0.5.5.1.orig.tar.gz (Debian style)`
-    StemParser.new(/_(#{NUMERIC_WITH_DOTS}[abc]?)\.orig$/),
+    # Debian style
+    # e.g. `dash_0.5.5.1.orig.tar.gz`
+    # e.g. `lcrack_20040914.orig.tar.gz`
+    # e.g. `mkcue_1.orig.tar.gz`
+    StemParser.new(/_(#{NUMERIC_WITH_OPTIONAL_DOTS}[abc]?)\.orig$/),
 
     # e.g. `https://www.openssl.org/source/openssl-0.9.8s.tar.gz`
     StemParser.new(/-v?(\d[^-]+)/),
@@ -486,15 +488,15 @@ class Version
 
     # e.g. `https://secure.php.net/get/php-7.1.10.tar.bz2/from/this/mirror`
     UrlParser.new(/[-.vV]?(#{NUMERIC_WITH_DOTS}#{PRERELEASE_SUFFIX}?)/),
-  ].freeze
+  ].freeze, T::Array[Version::Parser])
   private_constant :VERSION_PARSERS
 
-  sig { params(val: T.any(PkgVersion, String, Version), detected_from_url: T::Boolean).void }
+  sig { params(val: T.any(String, Version), detected_from_url: T::Boolean).void }
   def initialize(val, detected_from_url: false)
     version = val.to_str
     raise ArgumentError, "Version must not be empty" if version.blank?
 
-    @version = version
+    @version = T.let(version, String)
     @detected_from_url = detected_from_url
   end
 
@@ -729,12 +731,10 @@ class Version
   def to_s = version.to_s
 
   sig { params(options: T.untyped).returns(String) }
-  def to_json(*options)
-    version.to_json(*options)
-  end
+  def to_json(*options) = version.to_json(*options)
 
   sig { params(method: T.any(Symbol, String), include_all: T::Boolean).returns(T::Boolean) }
-  def respond_to?(method, include_all = T.unsafe(nil))
+  def respond_to?(method, include_all = false)
     return !null? if ["to_str", :to_str].include?(method)
 
     super
@@ -760,7 +760,10 @@ class Version
 
   sig { returns(T::Array[Token]) }
   def tokens
-    @tokens ||= version&.scan(SCAN_PATTERN)&.map { |token| Token.create(T.cast(token, String)) } || []
+    @tokens ||= T.let(
+      version&.scan(SCAN_PATTERN)&.map { |token| Token.create(T.cast(token, String)) } || [],
+      T.nilable(T::Array[Token]),
+    )
   end
 
   private
@@ -773,5 +776,5 @@ class Version
   # Represents the absence of a version.
   #
   # NOTE: Constructor needs to called with an arbitrary non-empty version which is then set to `nil`.
-  NULL = Version.new("NULL").tap { |v| v.instance_variable_set(:@version, nil) }.freeze
+  NULL = T.let(Version.new("NULL").tap { |v| v.instance_variable_set(:@version, nil) }.freeze, Version)
 end

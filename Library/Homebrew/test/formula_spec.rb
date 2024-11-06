@@ -63,8 +63,8 @@ RSpec.describe Formula do
     context "when in a Tap" do
       let(:tap) { Tap.fetch("foo", "bar") }
       let(:path) { (tap.path/"Formula/#{name}.rb") }
-      let(:full_name) { "#{tap.user}/#{tap.repo}/#{name}" }
-      let(:full_alias_name) { "#{tap.user}/#{tap.repo}/#{alias_name}" }
+      let(:full_name) { "#{tap.user}/#{tap.repository}/#{name}" }
+      let(:full_alias_name) { "#{tap.user}/#{tap.repository}/#{alias_name}" }
 
       specify "formula instantiation" do
         expect(f.name).to eq(name)
@@ -228,7 +228,7 @@ RSpec.describe Formula do
 
     alias_name = "bar"
     alias_path = tap.alias_dir/alias_name
-    full_alias_name = "#{tap.user}/#{tap.repo}/#{alias_name}"
+    full_alias_name = "#{tap.user}/#{tap.repository}/#{alias_name}"
     tap.alias_dir.mkpath
     FileUtils.ln_sf f.path, alias_path
 
@@ -264,7 +264,7 @@ RSpec.describe Formula do
 
     prefix = HOMEBREW_CELLAR/f.name/"0.1"
     prefix.mkpath
-    FileUtils.touch prefix/Tab::FILENAME
+    FileUtils.touch prefix/AbstractTab::FILENAME
 
     expect(f).to have_any_version_installed
   end
@@ -279,7 +279,7 @@ RSpec.describe Formula do
 
     oldname_prefix.mkpath
     oldname_tab = Tab.empty
-    oldname_tab.tabfile = oldname_prefix/Tab::FILENAME
+    oldname_tab.tabfile = oldname_prefix/AbstractTab::FILENAME
     oldname_tab.write
 
     expect(f).not_to need_migration
@@ -346,7 +346,7 @@ RSpec.describe Formula do
       head_prefix.mkpath
 
       tab = Tab.empty
-      tab.tabfile = head_prefix/Tab::FILENAME
+      tab.tabfile = head_prefix/AbstractTab::FILENAME
       tab.source["versions"] = { "stable" => "1.0" }
       tab.write
 
@@ -378,7 +378,7 @@ RSpec.describe Formula do
         prefix.mkpath
 
         tab = Tab.empty
-        tab.tabfile = prefix/Tab::FILENAME
+        tab.tabfile = prefix/AbstractTab::FILENAME
         tab.source_modified_time = stamp
         tab.write
       end
@@ -1106,7 +1106,7 @@ RSpec.describe Formula do
         prefix = f.prefix(version)
         prefix.mkpath
         tab = Tab.empty
-        tab.tabfile = prefix/Tab::FILENAME
+        tab.tabfile = prefix/AbstractTab::FILENAME
         tab.source_modified_time = 1
         tab.write
       end
@@ -1340,7 +1340,7 @@ RSpec.describe Formula do
     def setup_tab_for_prefix(prefix, options = {})
       prefix.mkpath
       tab = Tab.empty
-      tab.tabfile = prefix/Tab::FILENAME
+      tab.tabfile = prefix/AbstractTab::FILENAME
       tab.source["path"] = options[:path].to_s if options[:path]
       tab.source["tap"] = options[:tap] if options[:tap]
       tab.source["versions"] = options[:versions] if options[:versions]
@@ -1545,7 +1545,7 @@ RSpec.describe Formula do
         described_class.clear_cache
         expect(f.outdated_kegs(fetch_head: true)).not_to be_empty
 
-        head_prefix_a.rmtree
+        FileUtils.rm_r(head_prefix_a)
         described_class.clear_cache
         expect(f.outdated_kegs(fetch_head: true)).not_to be_empty
 
@@ -1553,7 +1553,7 @@ RSpec.describe Formula do
         described_class.clear_cache
         expect(f.outdated_kegs(fetch_head: true)).to be_empty
       ensure
-        testball_repo.rmtree if testball_repo.exist?
+        FileUtils.rm_r(testball_repo) if testball_repo.exist?
       end
     end
 
@@ -1632,7 +1632,7 @@ RSpec.describe Formula do
         expect(f.outdated_kegs).not_to be_empty
 
         described_class.clear_cache
-        head_prefix.rmtree
+        FileUtils.rm_r(head_prefix)
 
         setup_tab_for_prefix(head_prefix, versions: { "stable" => "1.0", "version_scheme" => 2 })
         expect(f.outdated_kegs).to be_empty
@@ -1930,6 +1930,44 @@ RSpec.describe Formula do
     it "throws an error when passed an invalid symbol" do
       f = Testball.new
       expect { f.network_access_allowed?(:foo) }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe "#specified_path" do
+    let(:klass) do
+      Class.new(described_class) do
+        url "https://brew.sh/foo-1.0.tar.gz"
+      end
+    end
+
+    let(:name) { "formula_name" }
+    let(:path) { Formulary.core_path(name) }
+    let(:spec) { :stable }
+    let(:alias_name) { "baz@1" }
+    let(:alias_path) { CoreTap.instance.alias_dir/alias_name }
+    let(:f) { klass.new(name, path, spec) }
+    let(:f_alias) { klass.new(name, path, spec, alias_path:) }
+
+    context "when loading from a formula file" do
+      it "returns the formula file path" do
+        expect(f.specified_path).to eq(path)
+      end
+    end
+
+    context "when loaded from an alias" do
+      it "returns the alias path" do
+        expect(f_alias.specified_path).to eq(alias_path)
+      end
+    end
+
+    context "when loaded from the API" do
+      before do
+        allow(f).to receive(:loaded_from_api?).and_return(true)
+      end
+
+      it "returns the API path" do
+        expect(f.specified_path).to eq(Homebrew::API::Formula.cached_json_file_path)
+      end
     end
   end
 end

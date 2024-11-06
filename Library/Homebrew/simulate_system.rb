@@ -1,5 +1,7 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
+
+require "macos_version"
 
 module Homebrew
   # Helper module for simulating different system configurations.

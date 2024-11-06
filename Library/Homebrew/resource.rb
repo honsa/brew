@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "downloadable"
@@ -9,7 +9,8 @@ require "extend/on_system"
 # Resource is the fundamental representation of an external resource. The
 # primary formula download, along with other declared resources, are instances
 # of this class.
-class Resource < Downloadable
+class Resource
+  include Downloadable
   include FileUtils
   include OnSystem::MacOSAndLinux
 
@@ -140,7 +141,15 @@ class Resource < Downloadable
     Partial.new(self, files)
   end
 
-  def fetch(verify_download_integrity: true)
+  sig {
+    override
+      .params(
+        verify_download_integrity: T::Boolean,
+        timeout:                   T.nilable(T.any(Integer, Float)),
+        quiet:                     T::Boolean,
+      ).returns(Pathname)
+  }
+  def fetch(verify_download_integrity: true, timeout: nil, quiet: false)
     fetch_patches
 
     super
@@ -194,7 +203,7 @@ class Resource < Downloadable
     @download_strategy = @url.download_strategy
   end
 
-  sig { params(val: T.nilable(T.any(String, Version))).returns(T.nilable(Version)) }
+  sig { override.params(val: T.nilable(T.any(String, Version))).returns(T.nilable(Version)) }
   def version(val = nil)
     return super() if val.nil?
 
@@ -211,7 +220,7 @@ class Resource < Downloadable
   end
 
   def patch(strip = :p1, src = nil, &block)
-    p = Patch.create(strip, src, &block)
+    p = ::Patch.create(strip, src, &block)
     patches << p
   end
 
@@ -260,6 +269,27 @@ class Resource < Downloadable
     [*extra_urls, *super].uniq
   end
 
+  # A local resource that doesn't need to be downloaded.
+  class Local < Resource
+    def initialize(path)
+      super(File.basename(path))
+      @downloader = LocalBottleDownloadStrategy.new(path)
+    end
+  end
+
+  # A resource for a formula.
+  class Formula < Resource
+    sig { override.returns(String) }
+    def name
+      T.must(owner).name
+    end
+
+    sig { override.returns(String) }
+    def download_name
+      name
+    end
+  end
+
   # A resource containing a Go package.
   class Go < Resource
     def stage(target, &block)
@@ -267,8 +297,77 @@ class Resource < Downloadable
     end
   end
 
+  # A resource for a bottle manifest.
+  class BottleManifest < Resource
+    class Error < RuntimeError; end
+
+    attr_reader :bottle
+
+    def initialize(bottle)
+      super("#{bottle.name}_bottle_manifest")
+      @bottle = bottle
+      @manifest_annotations = nil
+    end
+
+    def verify_download_integrity(_filename)
+      # We don't have a checksum, but we can at least try parsing it.
+      tab
+    end
+
+    def tab
+      tab = manifest_annotations["sh.brew.tab"]
+      raise Error, "Couldn't find tab from manifest." if tab.blank?
+
+      begin
+        JSON.parse(tab)
+      rescue JSON::ParserError
+        raise Error, "Couldn't parse tab JSON."
+      end
+    end
+
+    sig { returns(T.nilable(Integer)) }
+    def bottle_size
+      manifest_annotations["sh.brew.bottle.size"]&.to_i
+    end
+
+    sig { returns(T.nilable(Integer)) }
+    def installed_size
+      manifest_annotations["sh.brew.bottle.installed_size"]&.to_i
+    end
+
+    private
+
+    def manifest_annotations
+      return @manifest_annotations unless @manifest_annotations.nil?
+
+      json = begin
+        JSON.parse(cached_download.read)
+      rescue JSON::ParserError
+        raise Error, "The downloaded GitHub Packages manifest was corrupted or modified (it is not valid JSON): " \
+                     "\n#{cached_download}"
+      end
+
+      manifests = json["manifests"]
+      raise Error, "Missing 'manifests' section." if manifests.blank?
+
+      manifests_annotations = manifests.filter_map { |m| m["annotations"] }
+      raise Error, "Missing 'annotations' section." if manifests_annotations.blank?
+
+      bottle_digest = bottle.resource.checksum.hexdigest
+      image_ref = GitHubPackages.version_rebuild(bottle.resource.version, bottle.rebuild, bottle.tag.to_s)
+      manifest_annotations = manifests_annotations.find do |m|
+        next if m["sh.brew.bottle.digest"] != bottle_digest
+
+        m["org.opencontainers.image.ref.name"] == image_ref
+      end
+      raise Error, "Couldn't find manifest matching bottle checksum." if manifest_annotations.blank?
+
+      @manifest_annotations = manifest_annotations
+    end
+  end
+
   # A resource containing a patch.
-  class PatchResource < Resource
+  class Patch < Resource
     attr_reader :patch_files
 
     def initialize(&block)

@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "extend/cachable"
@@ -9,6 +9,9 @@ module Homebrew
     # Helper functions for using the formula JSON API.
     module Formula
       extend Cachable
+
+      DEFAULT_API_FILENAME = "formula.jws.json"
+      INTERNAL_V3_API_FILENAME = "internal/v3/homebrew-core.jws.json"
 
       private_class_method :cache
 
@@ -29,19 +32,30 @@ module Homebrew
           cache: HOMEBREW_CACHE_API_SOURCE/"#{tap}/#{git_head}/Formula",
         )
         download.fetch
-        Formulary.factory(download.symlink_location,
-                          formula.active_spec_sym,
-                          alias_path: formula.alias_path,
-                          flags:      formula.class.build_flags)
+
+        with_env(HOMEBREW_FORBID_PACKAGES_FROM_PATHS: nil) do
+          Formulary.factory(download.symlink_location,
+                            formula.active_spec_sym,
+                            alias_path: formula.alias_path,
+                            flags:      formula.class.build_flags)
+        end
+      end
+
+      def self.cached_json_file_path
+        if Homebrew::API.internal_json_v3?
+          HOMEBREW_CACHE_API/INTERNAL_V3_API_FILENAME
+        else
+          HOMEBREW_CACHE_API/DEFAULT_API_FILENAME
+        end
       end
 
       sig { returns(T::Boolean) }
       def self.download_and_cache_data!
         if Homebrew::API.internal_json_v3?
-          json_formulae, updated = Homebrew::API.fetch_json_api_file "internal/v3/homebrew-core.jws.json"
+          json_formulae, updated = Homebrew::API.fetch_json_api_file INTERNAL_V3_API_FILENAME
           overwrite_cache! T.cast(json_formulae, T::Hash[String, T.untyped])
         else
-          json_formulae, updated = Homebrew::API.fetch_json_api_file "formula.jws.json"
+          json_formulae, updated = Homebrew::API.fetch_json_api_file DEFAULT_API_FILENAME
 
           cache["aliases"] = {}
           cache["renames"] = {}

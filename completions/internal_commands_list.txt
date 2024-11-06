@@ -28,6 +28,7 @@ completions
 config
 contributions
 create
+debugger
 deps
 desc
 determine-test-runners
@@ -90,6 +91,7 @@ setup-ruby
 sh
 shellenv
 style
+tab
 tap
 tap-info
 tap-new

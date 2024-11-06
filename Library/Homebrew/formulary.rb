@@ -1,15 +1,17 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "digest/sha2"
 require "extend/cachable"
 require "tab"
+require "utils"
 require "utils/bottles"
 require "service"
 require "utils/curl"
 require "deprecate_disable"
 require "extend/hash/deep_transform_values"
 require "extend/hash/keys"
+require "tap"
 
 # The {Formulary} is responsible for creating instances of {Formula}.
 # It is not meant to be used directly from formulae.
@@ -17,8 +19,8 @@ module Formulary
   extend Context
   extend Cachable
 
-  URL_START_REGEX = %r{(https?|ftp|file)://}
-  private_constant :URL_START_REGEX
+  ALLOWED_URL_SCHEMES = %w[file].freeze
+  private_constant :ALLOWED_URL_SCHEMES
 
   # `:codesign` and custom requirement classes are not supported.
   API_SUPPORTED_REQUIREMENTS = [:arch, :linux, :macos, :maximum_macos, :xcode].freeze
@@ -416,10 +418,12 @@ module Formulary
 
       @caveats_string = json_formula["caveats"]
       def caveats
-        self.class.instance_variable_get(:@caveats_string)
-            &.gsub(HOMEBREW_PREFIX_PLACEHOLDER, HOMEBREW_PREFIX)
-            &.gsub(HOMEBREW_CELLAR_PLACEHOLDER, HOMEBREW_CELLAR)
-            &.gsub(HOMEBREW_HOME_PLACEHOLDER, Dir.home)
+        caveats_string = self.class.instance_variable_get(:@caveats_string)
+        return unless caveats_string
+
+        caveats_string.gsub(HOMEBREW_PREFIX_PLACEHOLDER, HOMEBREW_PREFIX)
+                      .gsub(HOMEBREW_CELLAR_PLACEHOLDER, HOMEBREW_CELLAR)
+                      .gsub(HOMEBREW_HOME_PLACEHOLDER, Dir.home)
       end
 
       @tap_git_head_string = if Homebrew::API.internal_json_v3?
@@ -590,38 +594,27 @@ module Formulary
         .returns(T.nilable(T.attached_class))
     }
     def self.try_new(ref, from: T.unsafe(nil), warn: false)
+      return if Homebrew::EnvConfig.forbid_packages_from_paths?
+
       ref = ref.to_s
 
-      new(ref) if HOMEBREW_BOTTLES_EXTNAME_REGEX.match?(ref)
+      new(ref) if HOMEBREW_BOTTLES_EXTNAME_REGEX.match?(ref) && File.exist?(ref)
     end
 
-    def initialize(bottle_name)
-      case bottle_name
-      when URL_START_REGEX
-        # The name of the formula is found between the last slash and the last hyphen.
-        formula_name = File.basename(bottle_name)[/(.+)-/, 1]
-        resource = Resource.new(formula_name) { url bottle_name }
-        resource.specs[:bottle] = true
-        downloader = resource.downloader
-        cached = downloader.cached_location.exist?
-        downloader.fetch
-        ohai "Pouring the cached bottle" if cached
-        @bottle_filename = downloader.cached_location
-      else
-        @bottle_filename = Pathname(bottle_name).realpath
-      end
-      name, full_name = Utils::Bottles.resolve_formula_names @bottle_filename
+    def initialize(bottle_name, warn: false)
+      @bottle_path = Pathname(bottle_name).realpath
+      name, full_name = Utils::Bottles.resolve_formula_names(@bottle_path)
       super name, Formulary.path(full_name)
     end
 
     def get_formula(spec, force_bottle: false, flags: [], ignore_errors: false, **)
       formula = begin
-        contents = Utils::Bottles.formula_contents(@bottle_filename, name:)
+        contents = Utils::Bottles.formula_contents(@bottle_path, name:)
         Formulary.from_contents(name, path, contents, spec, force_bottle:,
                                 flags:, ignore_errors:)
       rescue FormulaUnreadableError => e
         opoo <<~EOS
-          Unreadable formula in #{@bottle_filename}:
+          Unreadable formula in #{@bottle_path}:
           #{e}
         EOS
         super
@@ -632,7 +625,7 @@ module Formulary
         EOS
         super
       end
-      formula.local_bottle_path = @bottle_filename
+      formula.local_bottle_path = @bottle_path
       formula
     end
   end
@@ -654,6 +647,9 @@ module Formulary
       end
 
       return unless path.expand_path.exist?
+
+      return if Homebrew::EnvConfig.forbid_packages_from_paths? &&
+                !path.realpath.to_s.start_with?("#{HOMEBREW_CELLAR}/", "#{HOMEBREW_LIBRARY}/Taps/")
 
       options = if (tap = Tap.from_path(path))
         # Only treat symlinks in taps as aliases.
@@ -707,9 +703,22 @@ module Formulary
         .returns(T.nilable(T.attached_class))
     }
     def self.try_new(ref, from: T.unsafe(nil), warn: false)
-      ref = ref.to_s
+      return if Homebrew::EnvConfig.forbid_packages_from_paths?
 
-      new(ref, from:) if URL_START_REGEX.match?(ref)
+      # Cache compiled regex
+      @uri_regex ||= begin
+        uri_regex = ::URI::DEFAULT_PARSER.make_regexp
+        Regexp.new("\\A#{uri_regex.source}\\Z", uri_regex.options)
+      end
+
+      uri = ref.to_s
+      return unless uri.match?(@uri_regex)
+
+      uri = URI(uri)
+      return unless uri.path
+      return unless uri.scheme.present?
+
+      new(uri, from:)
     end
 
     attr_reader :url
@@ -726,12 +735,8 @@ module Formulary
     end
 
     def load_file(flags:, ignore_errors:)
-      match = url.match(%r{githubusercontent.com/[\w-]+/[\w-]+/[a-f0-9]{40}(?:/Formula)?/(?<name>[\w+-.@]+).rb})
-      if match
-        raise UnsupportedInstallationMethod,
-              "Installation of #{match[:name]} from a GitHub commit URL is unsupported! " \
-              "`brew extract #{match[:name]}` to a stable tap on GitHub instead."
-      elsif url.match?(%r{^(https?|ftp)://})
+      url_scheme = URI(url).scheme
+      if ALLOWED_URL_SCHEMES.exclude?(url_scheme)
         raise UnsupportedInstallationMethod,
               "Non-checksummed download of #{name} formula file from an arbitrary URL is unsupported! " \
               "`brew extract` or `brew create` and `brew tap-new` to create a formula file in a tap " \
@@ -759,7 +764,7 @@ module Formulary
 
     sig {
       params(ref: T.any(String, Pathname, URI::Generic), from: Symbol, warn: T::Boolean)
-        .returns(T.nilable(T.attached_class))
+        .returns(T.nilable(FormulaLoader))
     }
     def self.try_new(ref, from: T.unsafe(nil), warn: false)
       ref = ref.to_s
@@ -776,7 +781,11 @@ module Formulary
         {}
       end
 
-      new(name, path, tap:, **options)
+      if type == :migration && tap.core_tap? && (loader = FromAPILoader.try_new(name))
+        loader
+      else
+        new(name, path, tap:, **options)
+      end
     end
 
     sig { params(name: String, path: Pathname, tap: Tap, alias_name: String).void }
@@ -811,7 +820,7 @@ module Formulary
   class FromNameLoader < FromTapLoader
     sig {
       params(ref: T.any(String, Pathname, URI::Generic), from: Symbol, warn: T::Boolean)
-        .returns(T.nilable(T.attached_class))
+        .returns(T.nilable(FormulaLoader))
     }
     def self.try_new(ref, from: T.unsafe(nil), warn: false)
       return unless ref.is_a?(String)
@@ -821,14 +830,14 @@ module Formulary
 
       # If it exists in the default tap, never treat it as ambiguous with another tap.
       if (core_tap = CoreTap.instance).installed? &&
-         (loader = super("#{core_tap}/#{name}", warn:))&.path&.exist?
-        return loader
+         (core_loader = super("#{core_tap}/#{name}", warn:))&.path&.exist?
+        return core_loader
       end
 
       loaders = Tap.select { |tap| tap.installed? && !tap.core_tap? }
                    .filter_map { |tap| super("#{tap}/#{name}", warn:) }
                    .uniq(&:path)
-                   .select { |tap| tap.path.exist? }
+                   .select { |loader| loader.is_a?(FromAPILoader) || loader.path.exist? }
 
       case loaders.count
       when 1

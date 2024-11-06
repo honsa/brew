@@ -6,9 +6,13 @@ require "system_command"
 module UnpackStrategy
   class Zip
     module MacOSZipExtension
+      extend T::Helpers
+
+      requires_ancestor { UnpackStrategy }
+
       private
 
-      sig { params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).returns(T.untyped) }
+      sig { params(unpack_dir: Pathname, basename: Pathname, verbose: T::Boolean).void }
       def extract_to_dir(unpack_dir, basename:, verbose:)
         with_env(TZ: "UTC") do
           if merge_xattrs && contains_extended_attributes?(path)

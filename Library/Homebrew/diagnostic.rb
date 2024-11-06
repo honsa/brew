@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "keg"
@@ -315,7 +315,7 @@ module Homebrew
       def check_for_broken_symlinks
         broken_symlinks = []
 
-        Keg::MUST_EXIST_SUBDIRECTORIES.each do |d|
+        Keg.must_exist_subdirectories.each do |d|
           next unless d.directory?
 
           d.find do |path|
@@ -344,7 +344,7 @@ module Homebrew
       def check_exist_directories
         return if HOMEBREW_PREFIX.writable?
 
-        not_exist_dirs = Keg::MUST_EXIST_DIRECTORIES.reject(&:exist?)
+        not_exist_dirs = Keg.must_exist_directories.reject(&:exist?)
         return if not_exist_dirs.empty?
 
         <<~EOS
@@ -359,8 +359,8 @@ module Homebrew
 
       def check_access_directories
         not_writable_dirs =
-          Keg::MUST_BE_WRITABLE_DIRECTORIES.select(&:exist?)
-                                           .reject(&:writable?)
+          Keg.must_be_writable_directories.select(&:exist?)
+             .reject(&:writable?)
         return if not_writable_dirs.empty?
 
         <<~EOS
@@ -560,7 +560,7 @@ module Homebrew
 
       def check_deprecated_official_taps
         tapped_deprecated_taps =
-          Tap.select(&:official?).map(&:repo) & DEPRECATED_OFFICIAL_TAPS
+          Tap.select(&:official?).map(&:repository) & DEPRECATED_OFFICIAL_TAPS
         return if tapped_deprecated_taps.empty?
 
         <<~EOS
@@ -764,7 +764,7 @@ module Homebrew
       end
 
       def check_for_external_cmd_name_conflict
-        cmds = Tap.cmd_directories.flat_map { |p| Dir["#{p}/brew-*"] }.uniq
+        cmds = Commands.tap_cmd_directories.flat_map { |p| Dir["#{p}/brew-*"] }.uniq
         cmds = cmds.select { |cmd| File.file?(cmd) && File.executable?(cmd) }
         cmd_map = {}
         cmds.each do |cmd|
@@ -865,7 +865,7 @@ module Homebrew
       def check_for_unnecessary_core_tap
         return if Homebrew::EnvConfig.developer?
         return if Homebrew::EnvConfig.no_install_from_api?
-        return if Homebrew::Settings.read("devcmdrun") == "true"
+        return if Homebrew::EnvConfig.devcmdrun?
         return unless CoreTap.instance.installed?
 
         <<~EOS
@@ -879,7 +879,7 @@ module Homebrew
       def check_for_unnecessary_cask_tap
         return if Homebrew::EnvConfig.developer?
         return if Homebrew::EnvConfig.no_install_from_api?
-        return if Homebrew::Settings.read("devcmdrun") == "true"
+        return if Homebrew::EnvConfig.devcmdrun?
 
         cask_tap = CoreCaskTap.instance
         return unless cask_tap.installed?
@@ -945,16 +945,18 @@ module Homebrew
 
         taps = (Tap.to_a + [CoreCaskTap.instance]).uniq
 
-        add_info "Homebrew Cask Taps:", (taps.map do |tap|
+        taps_info = taps.filter_map do |tap|
           cask_count = begin
             tap.cask_files.count
           rescue
             error_tap_paths << tap.path
             0
           end
+          next if cask_count.zero?
 
           "#{tap.path} (#{Utils.pluralize("cask", cask_count, include_count: true)})"
-        end)
+        end
+        add_info "Homebrew Cask Taps:", taps_info
 
         taps_string = Utils.pluralize("tap", error_tap_paths.count)
         "Unable to read from cask #{taps_string}: #{error_tap_paths.to_sentence}" if error_tap_paths.present?

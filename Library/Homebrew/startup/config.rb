@@ -45,14 +45,14 @@ HOMEBREW_CACHE_FORMULA = (HOMEBREW_CACHE/"Formula").freeze
 # Where build, postinstall and test logs of formulae are written to
 HOMEBREW_LOGS = Pathname(ENV.fetch("HOMEBREW_LOGS")).expand_path.freeze
 
-# Path to the list of Homebrew maintainers as a JSON file
-HOMEBREW_MAINTAINER_JSON = (HOMEBREW_REPOSITORY/".github/maintainers.json").freeze
-
 # Must use `/tmp` instead of `TMPDIR` because long paths break Unix domain sockets
 HOMEBREW_TEMP = Pathname(ENV.fetch("HOMEBREW_TEMP")).then do |tmp|
   tmp.mkpath unless tmp.exist?
   tmp.realpath
 end.freeze
+
+# Where installed taps live
+HOMEBREW_TAP_DIRECTORY = (HOMEBREW_LIBRARY/"Taps").freeze
 
 # The Ruby path and args to use for forked Ruby calls
 HOMEBREW_RUBY_EXEC_ARGS = [

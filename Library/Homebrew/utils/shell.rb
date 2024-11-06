@@ -1,8 +1,12 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 module Utils
   module Shell
+    extend T::Helpers
+
+    requires_ancestor { Kernel }
+
     module_function
 
     # Take a path and heuristically convert it to a shell name,
@@ -60,7 +64,7 @@ module Utils
         rc_profile = "#{Dir.home}/.rcrc"
         return rc_profile if File.exist? rc_profile
       when :zsh
-        return "#{ENV["ZDOTDIR"]}/.zshrc" if ENV["ZDOTDIR"].present?
+        return "#{ENV["HOMEBREW_ZDOTDIR"]}/.zshrc" if ENV["HOMEBREW_ZDOTDIR"].present?
       end
 
       SHELL_PROFILE_MAP.fetch(preferred, "~/.profile")

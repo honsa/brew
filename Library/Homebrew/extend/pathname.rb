@@ -1,13 +1,11 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
-require "context"
-require "resource"
-require "metafiles"
-require "extend/file/atomic"
-require "system_command"
-
 module DiskUsageExtension
+  extend T::Helpers
+
+  requires_ancestor { Pathname }
+
   sig { returns(Integer) }
   def disk_usage
     return @disk_usage if defined?(@disk_usage)
@@ -74,6 +72,8 @@ module DiskUsageExtension
     end
   end
 end
+
+require "system_command"
 
 # Homebrew extends Ruby's `Pathname` to make our code more readable.
 # @see https://ruby-doc.org/stdlib-2.6.3/libdoc/pathname/rdoc/Pathname.html Ruby's Pathname API
@@ -186,6 +186,8 @@ class Pathname
   # @api public
   sig { params(content: String).void }
   def atomic_write(content)
+    require "extend/file/atomic"
+
     old_stat = stat if exist?
     File.atomic_write(self) do |file|
       file.write(content)
@@ -433,6 +435,8 @@ class Pathname
   end
 
   def install_metafiles(from = Pathname.pwd)
+    require "metafiles"
+
     Pathname(from).children.each do |p|
       next if p.directory?
       next if File.empty?(p)
@@ -467,6 +471,11 @@ class Pathname
   sig { returns(T::Boolean) }
   def dylib?
     false
+  end
+
+  sig { params(_wanted_arch: Symbol).returns(T::Boolean) }
+  def arch_compatible?(_wanted_arch)
+    true
   end
 
   sig { returns(T::Array[String]) }
@@ -509,15 +518,20 @@ class Pathname
     # create a RuboCop autocorrect instead soon.
     # This is why monkeypatching is non-ideal (but right solution to get
     # Ruby 3.3 over the line).
-    # odeprecated "rmtree", "FileUtils#rm_r"
+    odeprecated "rmtree", "FileUtils#rm_r"
     FileUtils.rm_r(@path, noop:, verbose:, secure:)
     nil
   end
 end
-
 require "extend/os/pathname"
 
+require "context"
+
 module ObserverPathnameExtension
+  extend T::Helpers
+
+  requires_ancestor { Pathname }
+
   class << self
     include Context
 

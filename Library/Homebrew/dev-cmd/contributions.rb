@@ -1,21 +1,17 @@
-# typed: true
+# typed: strict
 # frozen_string_literal: true
 
 require "abstract_command"
-require "warnings"
-Warnings.ignore :default_gems do
-  require "csv"
-end
 
 module Homebrew
   module DevCmd
     class Contributions < AbstractCommand
-      PRIMARY_REPOS = %w[brew core cask].freeze
-      SUPPORTED_REPOS = [
+      PRIMARY_REPOS = T.let(%w[brew core cask].freeze, T::Array[String])
+      SUPPORTED_REPOS = T.let([
         PRIMARY_REPOS,
         OFFICIAL_CMD_TAPS.keys.map { |t| t.delete_prefix("homebrew/") },
         OFFICIAL_CASK_TAPS.reject { |t| t == "cask" },
-      ].flatten.freeze
+      ].flatten.freeze, T::Array[String])
       MAX_REPO_COMMITS = 1000
 
       cmd_args do
@@ -50,18 +46,27 @@ module Homebrew
         results = {}
         grand_totals = {}
 
-        repos = if args.repositories.blank? || T.must(args.repositories).include?("primary")
-          PRIMARY_REPOS
-        elsif T.must(args.repositories).include?("all")
-          SUPPORTED_REPOS
-        else
-          args.repositories
+        repos = T.must(
+          if args.repositories.blank? || args.repositories&.include?("primary")
+            PRIMARY_REPOS
+          elsif args.repositories&.include?("all")
+            SUPPORTED_REPOS
+          else
+            args.repositories
+          end,
+        )
+
+        repos.each do |repo|
+          if SUPPORTED_REPOS.exclude?(repo)
+            odie "Unsupported repository: #{repo}. Try one of #{SUPPORTED_REPOS.join(", ")}."
+          end
         end
 
         from = args.from.presence || Date.today.prev_year.iso8601
 
         contribution_types = [:author, :committer, :coauthor, :review]
 
+        require "utils/github"
         users = args.user.presence || GitHub.members_by_team("Homebrew", "maintainers").keys
         users.each do |username|
           # TODO: Using the GitHub username to scan the `git log` undercounts some
@@ -100,6 +105,7 @@ module Homebrew
       def find_repo_path_for_repo(repo)
         return HOMEBREW_REPOSITORY if repo == "brew"
 
+        require "tap"
         Tap.fetch("homebrew", repo).path
       end
 
@@ -116,8 +122,10 @@ module Homebrew
         end
       end
 
-      sig { params(totals: Hash).returns(String) }
+      sig { params(totals: T::Hash[String, T::Hash[Symbol, Integer]]).returns(String) }
       def generate_csv(totals)
+        require "csv" # TODO: this will be removed from Ruby 3.4
+
         CSV.generate do |csv|
           csv << %w[user repo author committer coauthor review total]
 
@@ -127,7 +135,14 @@ module Homebrew
         end
       end
 
-      sig { params(user: String, grand_total: Hash).returns(Array) }
+      sig {
+        params(
+          user:        String,
+          grand_total: T::Hash[Symbol, Integer],
+        ).returns(
+          [String, String, T.nilable(Integer), T.nilable(Integer), T.nilable(Integer), T.nilable(Integer), Integer],
+        )
+      }
       def grand_total_row(user, grand_total)
         [
           user,
@@ -140,14 +155,20 @@ module Homebrew
         ]
       end
 
+      sig {
+        params(
+          repos:  T::Array[String],
+          person: String,
+          from:   String,
+        ).returns(T::Hash[Symbol, T.untyped])
+      }
       def scan_repositories(repos, person, from:)
         data = {}
+        return data if repos.blank?
 
+        require "tap"
+        require "utils/github"
         repos.each do |repo|
-          if SUPPORTED_REPOS.exclude?(repo)
-            return ofail "Unsupported repository: #{repo}. Try one of #{SUPPORTED_REPOS.join(", ")}."
-          end
-
           repo_path = find_repo_path_for_repo(repo)
           tap = Tap.fetch("homebrew", repo)
           unless repo_path.exist?
@@ -168,7 +189,7 @@ module Homebrew
           data[repo] = {
             author:    author_commits,
             committer: committer_commits,
-            coauthor:  git_log_trailers_cmd(T.must(repo_path), person, "Co-authored-by", from:, to: args.to),
+            coauthor:  git_log_trailers_cmd(repo_path, person, "Co-authored-by", from:, to: args.to),
             review:    count_reviews(repo_full_name, person, from:, to: args.to),
           }
         end
@@ -176,7 +197,7 @@ module Homebrew
         data
       end
 
-      sig { params(results: Hash).returns(Hash) }
+      sig { params(results: T::Hash[Symbol, T.untyped]).returns(T::Hash[Symbol, Integer]) }
       def total(results)
         totals = { author: 0, committer: 0, coauthor: 0, review: 0 }
 
@@ -207,6 +228,7 @@ module Homebrew
                to: T.nilable(String)).returns(Integer)
       }
       def count_reviews(repo_full_name, person, from:, to:)
+        require "utils/github"
         GitHub.count_issues("", is: "pr", repo: repo_full_name, reviewed_by: person, review: "approved", from:, to:)
       rescue GitHub::API::ValidationFailedError
         if args.verbose?

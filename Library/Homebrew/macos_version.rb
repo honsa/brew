@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "version"
@@ -30,6 +30,17 @@ class MacOSVersion < Version
     sierra:      "10.12",
     el_capitan:  "10.11",
   }.freeze
+
+  sig { params(macos_version: MacOSVersion).returns(Version) }
+  def self.kernel_major_version(macos_version)
+    version_major = macos_version.major.to_i
+    if version_major > 10
+      Version.new((version_major + 9).to_s)
+    else
+      version_minor = macos_version.minor.to_i
+      Version.new((version_minor + 4).to_s)
+    end
+  end
 
   sig { params(version: Symbol).returns(T.attached_class) }
   def self.from_symbol(version)

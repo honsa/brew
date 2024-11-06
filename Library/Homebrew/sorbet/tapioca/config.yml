@@ -4,14 +4,11 @@ gem:
   exclude:
     # These conflict with the rbi files provided by sorbet:
     - json
-    - msgpack
     # These aren't needed:
     - coderay
-    - commander
     - diff-lcs
     - docile
     - hana
-    - highline
     - language_server-protocol
     - netrc
     - parallel
@@ -23,12 +20,8 @@ gem:
     - rspec-retry
     - rspec
     - rspec_junit_formatter
-    - rubocop-capybara
-    - rubocop-factory_bot
     - rubocop-md
     - rubocop-performance
-    - rubocop-rspec
-    - rubocop-rspec_rails
     - rubocop-sorbet
     - ruby-prof
     - simplecov_json_formatter

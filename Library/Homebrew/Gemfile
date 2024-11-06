@@ -23,9 +23,6 @@ end
 group :ast, optional: true do
   gem "rubocop-ast", require: false
 end
-group :bootsnap, optional: true do
-  gem "bootsnap", require: false
-end
 group :formula_test, optional: true do
   gem "minitest", require: false
 end
@@ -65,10 +62,12 @@ group :tests, optional: true do
 end
 group :typecheck, optional: true do
   gem "method_source", require: false
-  gem "parlour", require: false
   gem "sorbet-static-and-runtime", require: false
   gem "spoom", require: false
   gem "tapioca", require: false
+end
+group :vscode, optional: true do
+  gem "ruby-lsp", require: false
 end
 
 # shared gems (used by multiple groups)
@@ -78,6 +77,7 @@ end
 
 # vendored gems (no group)
 gem "addressable"
+gem "concurrent-ruby"
 gem "patchelf"
 gem "plist"
 gem "ruby-macho"

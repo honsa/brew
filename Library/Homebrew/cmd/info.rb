@@ -1,4 +1,4 @@
-# typed: true
+# typed: true # rubocop:todo Sorbet/StrictSigil
 # frozen_string_literal: true
 
 require "abstract_command"
@@ -45,6 +45,8 @@ module Homebrew
         switch "--github",
                description: "Open the GitHub source page for <formula> and <cask> in a browser. " \
                             "To view the history locally: `brew log -p` <formula> or <cask>"
+        switch "--fetch-manifest",
+               description: "Fetch GitHub Packages manifest for extra information when <formula> is not installed."
         flag   "--json",
                description: "Print a JSON representation. Currently the default value for <version> is `v1` for " \
                             "<formula>. For <formula> and <cask> use `v2`. See the docs for examples of using the " \
@@ -69,6 +71,8 @@ module Homebrew
         conflicts "--installed", "--eval-all"
         conflicts "--installed", "--all"
         conflicts "--formula", "--cask"
+        conflicts "--fetch-manifest", "--cask"
+        conflicts "--fetch-manifest", "--json"
 
         named_args [:formula, :cask]
       end
@@ -249,7 +253,7 @@ module Homebrew
           formula.path.relative_path_from(T.must(formula.tap).path)
         when Cask::Cask
           cask = formula_or_cask
-          if cask.sourcefile_path.blank?
+          if cask.sourcefile_path.blank? || cask.sourcefile_path.extname != ".rb"
             return "#{cask.tap.default_remote}/blob/HEAD/#{cask.tap.relative_cask_path(cask.token)}"
           end
 
@@ -279,7 +283,10 @@ module Homebrew
         puts Formatter.url(formula.homepage) if formula.homepage
 
         deprecate_disable_info_string = DeprecateDisable.message(formula)
-        puts deprecate_disable_info_string.capitalize if deprecate_disable_info_string.present?
+        if deprecate_disable_info_string.present?
+          deprecate_disable_info_string.tap { |info_string| info_string[0] = info_string[0].upcase }
+          puts deprecate_disable_info_string
+        end
 
         conflicts = formula.conflicts.map do |conflict|
           reason = " (because #{conflict.reason})" if conflict.reason
@@ -300,6 +307,17 @@ module Homebrew
         ]
         if kegs.empty?
           puts "Not installed"
+          if (bottle = formula.bottle)
+            begin
+              bottle.fetch_tab(quiet: !args.debug?) if args.fetch_manifest?
+              bottle_size = bottle.bottle_size
+              installed_size = bottle.installed_size
+              puts "Bottle Size: #{disk_usage_readable(bottle_size)}" if bottle_size
+              puts "Installed Size: #{disk_usage_readable(installed_size)}" if installed_size
+            rescue RuntimeError => e
+              odebug e
+            end
+          end
         else
           puts "Installed"
           kegs.each do |keg|

@@ -39,6 +39,7 @@ begin
       help_flag = true
       help_cmd_index = i
     elsif !cmd && help_flag_list.exclude?(arg)
+      require "commands"
       cmd = ARGV.delete_at(i)
       cmd = Commands::HOMEBREW_INTERNAL_COMMAND_ALIASES.fetch(cmd, cmd)
     end
@@ -47,7 +48,7 @@ begin
   ARGV.delete_at(help_cmd_index) if help_cmd_index
 
   require "cli/parser"
-  args = Homebrew::CLI::Parser.new.parse(ARGV.dup.freeze, ignore_invalid_options: true)
+  args = Homebrew::CLI::Parser.new(Homebrew::Cmd::Brew).parse(ARGV.dup.freeze, ignore_invalid_options: true)
   Context.current = args.context
 
   path = PATH.new(ENV.fetch("PATH"))
@@ -59,15 +60,13 @@ begin
 
   ENV["PATH"] = path.to_s
 
-  require "abstract_command"
   require "commands"
-  require "settings"
 
   internal_cmd = Commands.valid_internal_cmd?(cmd) || Commands.valid_internal_dev_cmd?(cmd) if cmd
 
   unless internal_cmd
     # Add contributed commands to PATH before checking.
-    homebrew_path.append(Tap.cmd_directories)
+    homebrew_path.append(Commands.tap_cmd_directories)
 
     # External commands expect a normal PATH
     ENV["PATH"] = homebrew_path.to_s
@@ -86,14 +85,25 @@ begin
   if internal_cmd || Commands.external_ruby_v2_cmd_path(cmd)
     cmd = T.must(cmd)
     cmd_class = Homebrew::AbstractCommand.command(cmd)
+    Homebrew.running_command = cmd
     if cmd_class
       command_instance = cmd_class.new
+
+      require "utils/analytics"
       Utils::Analytics.report_command_run(command_instance)
       command_instance.run
     else
-      Homebrew.public_send Commands.method_name(cmd)
+      begin
+        Homebrew.public_send Commands.method_name(cmd)
+      rescue NoMethodError => e
+        case_error = "undefined method `#{cmd.downcase}' for module Homebrew"
+        odie "Unknown command: brew #{cmd}" if e.message == case_error
+
+        raise
+      end
     end
   elsif (path = Commands.external_ruby_cmd_path(cmd))
+    Homebrew.running_command = cmd
     require?(path)
     exit Homebrew.failed? ? 1 : 0
   elsif Commands.external_cmd_path(cmd)
@@ -102,6 +112,8 @@ begin
     end
     exec "brew-#{cmd}", *ARGV
   else
+    require "tap"
+
     possible_tap = OFFICIAL_CMD_TAPS.find { |_, cmds| cmds.include?(cmd) }
     possible_tap = Tap.fetch(possible_tap.first) if possible_tap
 
@@ -116,7 +128,7 @@ begin
       end
       # Check for cask explicitly because it's very common in old guides
       odie "`brew cask` is no longer a `brew` command. Use `brew <command> --cask` instead." if cmd == "cask"
-      odie "Unknown command: #{cmd}"
+      odie "Unknown command: brew #{cmd}"
     end
 
     # Unset HOMEBREW_HELP to avoid confusing the tap
@@ -139,10 +151,13 @@ begin
   end
 rescue UsageError => e
   require "help"
-  Homebrew::Help.help cmd, remaining_args: args&.remaining, usage_error: e.message
+  Homebrew::Help.help cmd, remaining_args: args&.remaining || [], usage_error: e.message
 rescue SystemExit => e
   onoe "Kernel.exit" if args&.debug? && !e.success?
-  $stderr.puts Utils::Backtrace.clean(e) if args&.debug? || ARGV.include?("--debug")
+  if args&.debug? || ARGV.include?("--debug")
+    require "utils/backtrace"
+    $stderr.puts Utils::Backtrace.clean(e)
+  end
   raise
 rescue Interrupt
   $stderr.puts # seemingly a newline is typical
@@ -179,13 +194,17 @@ rescue RuntimeError, SystemCallError => e
   raise if e.message.empty?
 
   onoe e
-  $stderr.puts Utils::Backtrace.clean(e) if args&.debug? || ARGV.include?("--debug")
+  if args&.debug? || ARGV.include?("--debug")
+    require "utils/backtrace"
+    $stderr.puts Utils::Backtrace.clean(e)
+  end
 
   exit 1
 rescue Exception => e # rubocop:disable Lint/RescueException
   onoe e
 
   method_deprecated_error = e.is_a?(MethodDeprecatedError)
+  require "utils/backtrace"
   $stderr.puts Utils::Backtrace.clean(e) if args&.debug? || ARGV.include?("--debug") || !method_deprecated_error
 
   if OS.unsupported_configuration?
